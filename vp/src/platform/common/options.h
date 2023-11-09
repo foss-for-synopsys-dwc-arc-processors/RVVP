@@ -15,11 +15,13 @@ public:
 	bool intercept_syscalls = false;
 	bool error_on_zero_traphandler = false;
 	bool use_debug_runner = false;
-	unsigned int debug_port = 5005;
+	unsigned int debug_port = 1234;
 	bool trace_mode = false;
 	unsigned int tlm_global_quantum = 10;
 	bool use_instr_dmi = false;
 	bool use_data_dmi = false;
+	bool use_spmp = false;
+	bool use_smpu = false;
 
 	virtual void printValues(std::ostream& os = std::cout) const;
 

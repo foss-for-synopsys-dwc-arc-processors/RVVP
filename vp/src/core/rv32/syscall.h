@@ -52,10 +52,16 @@
 #define SYS_dup 23
 
 // custom extensions
+#define SYS_status  0		  // Return RISC-V Hart status to simulation
+
 #define SYS_host_error \
 	1  // indicate an error, i.e. this instruction should never be reached so something went wrong during exec.
 #define SYS_host_test_pass 2  // RISC-V test execution successfully completed
 #define SYS_host_test_fail 3  // RISC-V test execution failed
+
+#define SYS_writec 5		  // Write character to console
+#define SYS_write0 6		  // Write zero terminated string to console
+#define SYS_readc  7 		  // Read character from console
 
 #include <tlm_utils/simple_target_socket.h>
 #include <systemc>

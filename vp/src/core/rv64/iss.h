@@ -6,6 +6,7 @@
 #include "core/common/instr.h"
 #include "core/common/irq_if.h"
 #include "core/common/trap.h"
+#include "trap-codes.h"
 #include "csr.h"
 #include "fp.h"
 #include "mem_if.h"
@@ -198,9 +199,9 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 
 	void clear_external_interrupt(PrivilegeLevel level) override;
 
-	void trigger_timer_interrupt(bool status) override;
+	void trigger_timer_interrupt(bool status, PrivilegeLevel sw_irq_type) override;
 
-	void trigger_software_interrupt(bool status) override;
+	void trigger_software_interrupt(bool status, PrivilegeLevel sw_irq_type) override;
 
 	void sys_exit() override;
 
@@ -235,6 +236,8 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	}
 
 	void validate_csr_counter_read_access_rights(uint64_t addr);
+
+	bool stimecmp_access_not_allowed(void);
 
 	uint64_t pc_alignment_mask() {
 		if (csrs.misa.has_C_extension())

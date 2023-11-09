@@ -2,7 +2,10 @@
 
 #include "core/common/dmi.h"
 #include "iss.h"
+#include "core/common/protected_access.h"
 #include "mmu.h"
+#include "spmp.h"
+#include "smpu.h"
 
 namespace rv32 {
 
@@ -25,7 +28,9 @@ struct InstrMemoryProxy : public instr_memory_if {
 struct CombinedMemoryInterface : public sc_core::sc_module,
                                  public instr_memory_if,
                                  public data_memory_if,
-                                 public mmu_memory_if  {
+                                 public mmu_memory_if,
+                                 public spmp_memory_if,
+                                 public smpu_memory_if {
 	ISS &iss;
 	std::shared_ptr<bus_lock_if> bus_lock;
 	uint64_t lr_addr = 0;
@@ -39,9 +44,26 @@ struct CombinedMemoryInterface : public sc_core::sc_module,
 	std::vector<MemoryDMI> dmi_ranges;
 
     MMU *mmu;
+    SPMP *spmp;
+    SMPU *smpu;
 
-	CombinedMemoryInterface(sc_core::sc_module_name, ISS &owner, MMU *mmu = nullptr)
-	    : iss(owner), quantum_keeper(iss.quantum_keeper), mmu(mmu) {
+	CombinedMemoryInterface(sc_core::sc_module_name, ISS &owner, MMU *mmu = nullptr,
+	      SPMP *spmp = nullptr, SMPU *smpu = nullptr)
+	    : iss(owner), quantum_keeper(iss.quantum_keeper), mmu(mmu), spmp(spmp), smpu(smpu) {
+	}
+
+	inline bool phya_spmp_check(PrivilegeLevel mode, uint64_t paddr, uint32_t sz,
+			MemoryAccessType type) override {
+		if (spmp == nullptr)
+			return false;
+		return spmp->do_phy_address_check(mode, paddr, sz, type);
+	}
+
+	inline bool phya_smpu_check(PrivilegeLevel mode, uint64_t *pa_va_ddr, uint32_t sz,
+		MemoryAccessType type, SmpuLevel level, bool is_hlvx_access = false) override {
+		if (smpu == nullptr)
+			return false;
+		return smpu->do_phy_address_check(mode, pa_va_ddr, sz, type, level, is_hlvx_access);
 	}
 
     uint64_t v2p(uint64_t vaddr, MemoryAccessType type) override {
@@ -113,16 +135,57 @@ struct CombinedMemoryInterface : public sc_core::sc_module,
 		atomic_unlock();
 	}
 
+	inline PrivilegeLevel get_mem_mode(MemoryAccessType type, PrivilegeLevel privilege_override) {
+		auto mode = iss.prv;
+		if (type != FETCH && iss.csrs.mstatus.fields.mprv)
+			mode = iss.csrs.mstatus.fields.mpp;
+		if (privilege_override != NoneMode)
+			mode = privilege_override;
 
-    template <typename T>
-    inline T _load_data(uint64_t addr) {
-        return _raw_load_data<T>(v2p(addr, LOAD));
-    }
+		return mode;
+	}
 
-    template <typename T>
-    inline void _store_data(uint64_t addr, T value) {
-        _raw_store_data(v2p(addr, STORE), value);
-    }
+	inline bool _phya_smpu_check(PrivilegeLevel mode, uint64_t *addr,
+		uint32_t sz, MemoryAccessType type, bool is_hlvx_access = false) {
+
+		bool smpu_done = phya_smpu_check(mode, addr, sz, type, SMPU_LEVEL_1, is_hlvx_access);
+		smpu_done &= phya_smpu_check(mode, addr, sz, type, SMPU_LEVEL_2, is_hlvx_access);
+
+		return smpu_done;
+	}
+
+	template <typename T>
+	inline T _load_data(uint64_t addr, PrivilegeLevel privilege_override = NoneMode, bool is_hlvx_access = false) {
+		auto mode = get_mem_mode(LOAD, privilege_override);
+
+		if (iss.use_smpu) { // SMPU
+			if (_phya_smpu_check(mode, &addr, sizeof(T), LOAD, is_hlvx_access))
+				return _raw_load_data<T>(addr);
+		} else if (iss.use_spmp) { // SPMP
+			if (phya_spmp_check(mode, addr, sizeof(T), LOAD))
+				return _raw_load_data<T>(addr);
+		}
+		/* satp.mode != Bare, then paged Virtual Memory only */
+		return _raw_load_data<T>(v2p(addr, LOAD));
+	}
+
+	template <typename T>
+	inline void _store_data(uint64_t addr, T value, PrivilegeLevel privilege_override = NoneMode) {
+		auto mode = get_mem_mode(STORE, privilege_override);
+
+		if (iss.use_smpu) { // SMPU
+			if (_phya_smpu_check(mode, &addr, sizeof(T), STORE)) {
+				_raw_store_data<T>(addr, value);
+				return;
+			}
+		} else if (iss.use_spmp) { // SPMP
+			if (phya_spmp_check(mode, addr, sizeof(T), STORE)) {
+				_raw_store_data<T>(addr, value);
+				return;
+			}
+		}
+		_raw_store_data(v2p(addr, STORE), value);
+	}
 
     uint64_t mmu_load_pte64(uint64_t addr) override {
         return _raw_load_data<uint64_t>(addr);
@@ -138,40 +201,55 @@ struct CombinedMemoryInterface : public sc_core::sc_module,
         mmu->flush_tlb();
     }
 
-    uint32_t load_instr(uint64_t addr) override {
-        return _raw_load_data<uint32_t>(v2p(addr, FETCH));
+    void clear_spmp_cache() override {
+        spmp->clear_spmp_cache();
     }
+
+	uint32_t load_instr(uint64_t addr) override {
+		auto mode = get_mem_mode(FETCH, NoneMode);
+
+		if (iss.use_smpu) { // SMPU
+			if (_phya_smpu_check(mode, &addr, sizeof(uint32_t), FETCH))
+				return _raw_load_data<uint32_t>(addr);
+		} else if (iss.use_spmp) { // SPMP
+			if (phya_spmp_check(mode, addr, sizeof(uint32_t), FETCH))
+				return _raw_load_data<uint32_t>(addr);
+		}
+		return _raw_load_data<uint32_t>(v2p(addr, FETCH));
+	}
 
     int64_t load_double(uint64_t addr) override {
         return _load_data<int64_t>(addr);
     }
-	int32_t load_word(uint64_t addr) override {
-		return _load_data<int32_t>(addr);
+	int32_t load_half(uint64_t addr, PrivilegeLevel privilege_override = NoneMode) override {
+		return _load_data<int16_t>(addr, privilege_override);
 	}
-	int32_t load_half(uint64_t addr) override {
-		return _load_data<int16_t>(addr);
+	int32_t load_byte(uint64_t addr, PrivilegeLevel privilege_override = NoneMode) override {
+		return _load_data<int8_t>(addr, privilege_override);
 	}
-	int32_t load_byte(uint64_t addr) override {
-		return _load_data<int8_t>(addr);
+	uint32_t load_ubyte(uint64_t addr, PrivilegeLevel privilege_override = NoneMode) override {
+		return _load_data<uint8_t>(addr, privilege_override);
 	}
-	uint32_t load_uhalf(uint64_t addr) override {
-		return _load_data<uint16_t>(addr);
+	uint32_t load_uhalf(uint64_t addr, PrivilegeLevel privilege_override = NoneMode,
+			bool is_hlvx_access = false) override {
+		return _load_data<uint16_t>(addr, privilege_override, is_hlvx_access);
 	}
-	uint32_t load_ubyte(uint64_t addr) override {
-		return _load_data<uint8_t>(addr);
+	int32_t load_word(uint64_t addr, PrivilegeLevel privilege_override = NoneMode,
+			bool is_hlvx_access = false) override {
+		return _load_data<int32_t>(addr, privilege_override, is_hlvx_access);
 	}
 
     void store_double(uint64_t addr, uint64_t value) override {
         _store_data(addr, value);
     }
-	void store_word(uint64_t addr, uint32_t value) override {
-		_store_data(addr, value);
+	void store_word(uint64_t addr, uint32_t value, PrivilegeLevel privilege_override = NoneMode) override {
+		_store_data(addr, value, privilege_override);
 	}
-	void store_half(uint64_t addr, uint16_t value) override {
-		_store_data(addr, value);
+	void store_half(uint64_t addr, uint16_t value, PrivilegeLevel privilege_override = NoneMode) override {
+		_store_data(addr, value, privilege_override);
 	}
-	void store_byte(uint64_t addr, uint8_t value) override {
-		_store_data(addr, value);
+	void store_byte(uint64_t addr, uint8_t value, PrivilegeLevel privilege_override = NoneMode) override {
+		_store_data(addr, value, privilege_override);
 	}
 
 	virtual int32_t atomic_load_word(uint64_t addr) override {

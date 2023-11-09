@@ -341,6 +341,27 @@ constexpr uint32_t FCVT_D_LU_ENCODING = 0b11010010001100000000000001010011;
 constexpr uint32_t FMV_D_X_MASK = 0b11111111111100000111000001111111;
 constexpr uint32_t FMV_D_X_ENCODING = 0b11110010000000000000000001010011;
 
+constexpr uint32_t HLVB_MASK =       0b11111111111100000111000001111111;
+constexpr uint32_t HLVB_ENCODING =   0b01100000000000000100000001110011;
+constexpr uint32_t HLVBU_MASK =      0b11111111111100000111000001111111;
+constexpr uint32_t HLVBU_ENCODING =  0b01100000000100000100000001110011;
+constexpr uint32_t HLVH_MASK =       0b11111111111100000111000001111111;
+constexpr uint32_t HLVH_ENCODING =   0b01100100000000000100000001110011;
+constexpr uint32_t HLVHU_MASK =      0b11111111111100000111000001111111;
+constexpr uint32_t HLVHU_ENCODING =  0b01100100000100000100000001110011;
+constexpr uint32_t HLVW_MASK =       0b11111111111100000111000001111111;
+constexpr uint32_t HLVW_ENCODING =   0b01101000000000000100000001110011;
+constexpr uint32_t HLVXHU_MASK =     0b11111111111100000111000001111111;
+constexpr uint32_t HLVXHU_ENCODING = 0b01100100001100000100000001110011;
+constexpr uint32_t HLVXWU_MASK =     0b11111111111100000111000001111111;
+constexpr uint32_t HLVXWU_ENCODING = 0b01101000001100000100000001110011;
+constexpr uint32_t HSVB_MASK =       0b11111110000000000111111111111111;
+constexpr uint32_t HSVB_ENCODING =   0b01100010000000000100000001110011;
+constexpr uint32_t HSVH_MASK =       0b11111110000000000111111111111111;
+constexpr uint32_t HSVH_ENCODING =   0b01100110000000000100000001110011;
+constexpr uint32_t HSVW_MASK =       0b11111110000000000111111111111111;
+constexpr uint32_t HSVW_ENCODING =   0b01101010000000000100000001110011;
+
 #define MATCH_AND_RETURN_INSTR2(instr, result)                     \
 	if (unlikely((data() & (instr##_MASK)) != (instr##_ENCODING))) \
 		return UNDEF;                                              \
@@ -612,6 +633,18 @@ std::array<const char *, Opcode::NUMBER_OF_INSTRUCTIONS> Opcode::mappingStr = {
     "MRET",
     "WFI",
     "SFENCE_VMA",
+
+    // Hypervisor extension: VM load and store
+    "HLVB",
+    "HLVBU",
+    "HLVH",
+    "HLVHU",
+    "HLVW",
+    "HLVXHU",
+    "HLVXWU",
+    "HSVB",
+    "HSVH",
+    "HSVW",
 };
 
 Opcode::Type Opcode::getType(Opcode::Mapping mapping) {
@@ -769,6 +802,16 @@ Opcode::Type Opcode::getType(Opcode::Mapping mapping) {
 		case FNMSUB_D:
 		case FNMADD_D:
 			return Type::R4;
+
+		case Opcode::CSRRW:
+		case Opcode::CSRRS:
+		case Opcode::CSRRC:
+			return Type::CSR;
+
+		case Opcode::CSRRWI:
+		case Opcode::CSRRSI:
+		case Opcode::CSRRCI:
+			return Type::CSRI;
 
 		default:
 			return Type::UNKNOWN;
@@ -1621,6 +1664,46 @@ Opcode::Mapping Instruction::decode_normal(Architecture arch) {
 					MATCH_AND_RETURN_INSTR(CSRRSI);
 				case F3_CSRRCI:
 					MATCH_AND_RETURN_INSTR(CSRRCI);
+				case F3_HV: {
+					switch (instr.funct7()) {
+						case F7_HLVB: {
+							switch (instr.rs2()) {
+								case RS2_HLVB:
+									MATCH_AND_RETURN_INSTR(HLVB);
+								case RS2_HLVBU:
+									MATCH_AND_RETURN_INSTR(HLVBU);
+							}
+							break;
+						}
+						case F7_HLVH: {
+							switch (instr.rs2()) {
+								case RS2_HLVH:
+									MATCH_AND_RETURN_INSTR(HLVH);
+								case RS2_HLVHU:
+									MATCH_AND_RETURN_INSTR(HLVHU);
+								case RS2_HLVXHU:
+									MATCH_AND_RETURN_INSTR(HLVXHU);
+							}
+							break;
+						}
+						case F7_HLVW: {
+							switch (instr.rs2()) {
+								case RS2_HLVW:
+									MATCH_AND_RETURN_INSTR(HLVW);
+								case RS2_HLVXWU:
+									MATCH_AND_RETURN_INSTR(HLVXWU);
+							}
+							break;
+						}
+						case F7_HSVB:
+							MATCH_AND_RETURN_INSTR(HSVB);
+						case F7_HSVH:
+							MATCH_AND_RETURN_INSTR(HSVH);
+						case F7_HSVW:
+							MATCH_AND_RETURN_INSTR(HSVW);
+					}
+					break;
+				}
 			}
 			break;
 		}
@@ -1902,4 +1985,118 @@ Opcode::Mapping Instruction::decode_normal(Architecture arch) {
 	}
 
 	return UNDEF;
+}
+
+uint32_t Instruction::get_xtinst(void) {
+	uint32_t xtinst = 0;
+
+	switch (opcode()) {
+		case  Opcode::OP_LB: {
+			switch (funct3()) {
+				case  Opcode::F3_LB:
+				case  Opcode::F3_LH:
+				case  Opcode::F3_LW:
+				case  Opcode::F3_LBU:
+				case  Opcode::F3_LHU:
+				case  Opcode::F3_LWU:
+				case  Opcode::F3_LD:
+					xtinst = set_xtinst_for_opld(data());
+					break;
+			}
+			break;
+		}
+		case Opcode::OP_FLW: {
+			switch (funct3()) {
+				case Opcode::F3_FLW:
+				case Opcode::F3_FLD:
+					xtinst = set_xtinst_for_opld(data());
+					break;
+			}
+			break;
+		}
+		case Opcode::OP_SB: {
+			switch (funct3()) {
+				case Opcode::F3_SB:
+				case Opcode::F3_SH:
+				case Opcode::F3_SW:
+				case Opcode::F3_SD:
+					xtinst = set_xtinst_for_opst(data());
+					break;
+			}
+			break;
+		}
+		case Opcode::OP_FSW: {
+			switch (funct3()) {
+				case Opcode::F3_FSW:
+				case Opcode::F3_FSD:
+					xtinst = set_xtinst_for_opst(data());
+					break;
+			}
+			break;
+		}
+		case Opcode::OP_AMO: {
+			switch (funct5()) {
+				case Opcode::F5_LR_W:
+				case Opcode::F5_SC_W:
+				case Opcode::F5_AMOSWAP_W:
+				case Opcode::F5_AMOADD_W:
+				case Opcode::F5_AMOXOR_W:
+				case Opcode::F5_AMOAND_W:
+				case Opcode::F5_AMOOR_W:
+				case Opcode::F5_AMOMIN_W:
+				case Opcode::F5_AMOMAX_W:
+				case Opcode::F5_AMOMINU_W:
+				case Opcode::F5_AMOMAXU_W:
+					//TODO: Addr offset field is zero for now
+					xtinst = inst_set_addr_offs_to_zero(data());
+					break;
+			}
+			break;
+		}
+		case Opcode::OP_ECALL: { // Virtual-machine load/store instruction (HLV, HLVX, or HSV)
+			switch (funct3()) {
+				case Opcode::F3_HV: {
+					switch (funct7()) {
+						case Opcode::F7_HLVB: {
+							switch (rs2()) {
+								case Opcode::RS2_HLVB:
+								case Opcode::RS2_HLVBU:
+									//TODO: Addr offset field is zero for now
+									xtinst = inst_set_addr_offs_to_zero(data());
+							}
+							break;
+						}
+						case Opcode::F7_HLVH: {
+							switch (rs2()) {
+								case Opcode::RS2_HLVH:
+								case Opcode::RS2_HLVHU:
+								case Opcode::RS2_HLVXHU:
+									//TODO: Addr offset field is zero for now
+									xtinst = inst_set_addr_offs_to_zero(data());
+							}
+							break;
+						}
+						case Opcode::F7_HLVW: {
+							switch (rs2()) {
+								case Opcode::RS2_HLVW:
+								case Opcode::RS2_HLVXWU:
+									//TODO: Addr offset field is zero for now
+									xtinst = inst_set_addr_offs_to_zero(data());
+							}
+							break;
+						}
+						case Opcode::F7_HSVB:
+						case Opcode::F7_HSVH:
+						case Opcode::F7_HSVW:
+							//TODO: Addr offset field is zero for now
+							xtinst = inst_set_addr_offs_to_zero(data());
+					}
+					break;
+				}
+			}
+			break;
+		}
+	}
+
+	return xtinst;
 }

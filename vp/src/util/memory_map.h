@@ -7,6 +7,7 @@
 struct RegisterRange {
 	struct WriteInfo {
 		uint64_t addr;
+		uint8_t *var_addr;
 		size_t size;
 		tlm::tlm_generic_payload &trans;
 		sc_core::sc_time &delay;
@@ -14,6 +15,7 @@ struct RegisterRange {
 
 	struct ReadInfo {
 		uint64_t addr;
+		uint8_t *var_addr;
 		size_t size;
 		tlm::tlm_generic_payload &trans;
 		sc_core::sc_time &delay;
@@ -78,13 +80,13 @@ struct RegisterRange {
 		assert(local_addr + len <= mem.size());
 
 		if (pre_write_callback)
-			if (!pre_write_callback({local_addr, len, trans, delay}))
+			if (!pre_write_callback({local_addr, mem.data() + local_addr, len, trans, delay}))
 				return;
 
 		memcpy(mem.data() + local_addr, src, len);
 
 		if (post_write_callback)
-			post_write_callback({local_addr, len, trans, delay});
+			post_write_callback({local_addr, mem.data() + local_addr, len, trans, delay});
 	}
 
 	void read(uint64_t addr, uint8_t *dst, size_t len, tlm::tlm_generic_payload &trans, sc_core::sc_time &delay) {
@@ -94,13 +96,13 @@ struct RegisterRange {
 		assert(local_addr + len <= mem.size());
 
 		if (pre_read_callback)
-			if (!pre_read_callback({local_addr, len, trans, delay}))
+			if (!pre_read_callback({local_addr, mem.data() + local_addr, len, trans, delay}))
 				return;
 
 		memcpy(dst, mem.data() + local_addr, len);
 
 		if (post_read_callback)
-			post_read_callback({local_addr, len, trans, delay});
+			post_read_callback({local_addr, mem.data() + local_addr, len, trans, delay});
 	}
 
 	bool match(tlm::tlm_generic_payload &trans) {

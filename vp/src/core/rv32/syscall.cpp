@@ -199,10 +199,32 @@ int sys_close(int fd) {
 	}
 }
 
+int sys_writec(int ch) {
+
+	auto ans = std::putc(ch, stderr);
+	
+	assert(ans != 0);
+
+	return ans;
+}
+
+int sys_status(void ) {
+
+	auto ans = 0;
+
+	// ToDo: find a way to extract current execution mode 
+	
+	return ans;
+}
+
 /*
  *  TODO: Some parameters need to be aligned to the hosts word width (mostly 64 bit)
  *	Especially when coming from a 32 bit guest system.
  */
+
+#define CONSOLE_GREEN	"\x1B[32m"
+#define CONSOLE_RED	"\x1B[31m"
+#define CONSOLE_RESET	"\033[0m"
 
 int SyscallHandler::execute_syscall(uint64_t n, uint64_t _a0, uint64_t _a1, uint64_t _a2, uint64_t) {
 	// NOTE: when linking with CRT, the most basic example only calls *gettimeofday* and finally *exit*
@@ -247,13 +269,31 @@ int SyscallHandler::execute_syscall(uint64_t n, uint64_t _a0, uint64_t _a1, uint
 			throw std::runtime_error("SYS_host_error");
 
 		case SYS_host_test_pass:
-			std::cout << "TEST_PASS" << std::endl;
+			std::cout << CONSOLE_GREEN "TEST_PASS" CONSOLE_RESET << std::endl;
 			shall_exit = true;
 			return 0;
 
 		case SYS_host_test_fail:
-			std::cout << "TEST_FAIL (testnum = " << _a0 << ")" << std::endl;
+			std::cout << CONSOLE_RED "TEST_FAIL" CONSOLE_RESET " (testnum = " << _a0 << ")" << std::endl;
 			shall_exit = true;
+			return 0;
+
+		case SYS_writec:
+			// std::cout << "syscall(SYS_writec, " << _a0 << ")" << std::endl;
+			// putchar((char)_a0);
+			// std::cout << (char)_a0;
+			return sys_writec(_a0);
+
+		case SYS_write0:
+			std::cout << "syscall(SYS_write0) is not yet supported" << std::endl;
+			return 0;
+
+		case SYS_readc:
+			std::cout << "syscall(SYS_readc) is not yet supported" << std::endl;
+			return 0;
+			
+		case SYS_status:
+			std::cout << "syscall(SYS_status) is not yet supported" << std::endl;
 			return 0;
 	}
 

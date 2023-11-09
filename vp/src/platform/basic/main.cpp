@@ -1,18 +1,25 @@
 #include <cstdlib>
 #include <ctime>
 
+#include "config.h"
 #include "basic_timer.h"
 #include "core/common/clint.h"
 #include "display.hpp"
 #include "dma.h"
 #include "elf_loader.h"
 #include "ethernet.h"
+#if 0
 #include "fe310_plic.h"
+#else
+#include "aplic.h"
+#endif
 #include "flash.h"
 #include "debug_memory.h"
 #include "iss.h"
 #include "mem.h"
 #include "memory.h"
+#include "spmp.h"
+#include "smpu.h"
 #include "memory_mapped_file.h"
 #include "sensor.h"
 #include "sensor2.h"
@@ -56,6 +63,9 @@ public:
 	addr_t uart_end_addr = uart_start_addr + 0xfff;
 	addr_t ethernet_start_addr = 0x30000000;
 	addr_t ethernet_end_addr = ethernet_start_addr + 1500;
+	addr_t imsic_start_addr = 0x31000000;
+	// page size * max core num * imsic per core number
+	addr_t imsic_end_addr = imsic_start_addr + 4096 * 16 * (1 + 1 + iss_config::MAX_GUEST);
 	addr_t plic_start_addr = 0x40000000;
 	addr_t plic_end_addr = 0x41000000;
 	addr_t sensor_start_addr = 0x50000000;
@@ -122,14 +132,20 @@ int sc_main(int argc, char **argv) {
 	tlm::tlm_global_quantum::instance().set(sc_core::sc_time(opt.tlm_global_quantum, sc_core::SC_NS));
 
 	ISS core(0, opt.use_E_base_isa);
+	SPMP spmp(core);
+	SMPU smpu(core);
 	SimpleMemory mem("SimpleMemory", opt.mem_size);
 	SimpleTerminal term("SimpleTerminal");
 	UART uart("Generic_UART", 6);
 	ELFLoader loader(opt.input_program.c_str());
-	SimpleBus<3, 13> bus("SimpleBus");
-	CombinedMemoryInterface iss_mem_if("MemoryInterface", core);
+	SimpleBus<4, 14> bus("SimpleBus");
+	CombinedMemoryInterface iss_mem_if("MemoryInterface", core, NULL, &spmp, &smpu);
 	SyscallHandler sys("SyscallHandler");
+#if 0
 	FE310_PLIC<1, 64, 96, 32> plic("PLIC");
+#else
+	APLIC<1, 2, 1023, 1023, 32> plic("APLIC");
+#endif
 	CLINT<1> clint("CLINT");
 	SimpleSensor sensor("SimpleSensor", 2);
 	SimpleSensor2 sensor2("SimpleSensor2", 5);
@@ -179,6 +195,9 @@ int sc_main(int argc, char **argv) {
 		core.sys = &sys;
 	core.error_on_zero_traphandler = opt.error_on_zero_traphandler;
 
+	core.use_spmp = opt.use_spmp;
+	core.use_smpu = opt.use_smpu;
+
 	// address mapping
 	{
 		unsigned it = 0;
@@ -193,6 +212,7 @@ int sc_main(int argc, char **argv) {
 		bus.ports[it++] = new PortMapping(opt.mram_start_addr, opt.mram_end_addr);
 		bus.ports[it++] = new PortMapping(opt.flash_start_addr, opt.flash_end_addr);
 		bus.ports[it++] = new PortMapping(opt.ethernet_start_addr, opt.ethernet_end_addr);
+		bus.ports[it++] = new PortMapping(opt.imsic_start_addr, opt.imsic_end_addr);
 		bus.ports[it++] = new PortMapping(opt.display_start_addr, opt.display_end_addr);
 		bus.ports[it++] = new PortMapping(opt.sys_start_addr, opt.sys_end_addr);
 	}
@@ -205,6 +225,8 @@ int sc_main(int argc, char **argv) {
 	dma_connector.isock.bind(bus.tsocks[1]);
 	dma.isock.bind(dma_connector.tsock);
 	dma_connector.bus_lock = bus_lock;
+
+	plic.isock.bind(bus.tsocks[3]);
 
 	{
 		unsigned it = 0;
@@ -219,6 +241,7 @@ int sc_main(int argc, char **argv) {
 		bus.isocks[it++].bind(mram.tsock);
 		bus.isocks[it++].bind(flashController.tsock);
 		bus.isocks[it++].bind(ethernet.tsock);
+		bus.isocks[it++].bind(core.imsic.tsock);
 		bus.isocks[it++].bind(display.tsock);
 		bus.isocks[it++].bind(sys.tsock);
 	}

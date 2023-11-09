@@ -1310,6 +1310,13 @@ void ISS::validate_csr_counter_read_access_rights(uint64_t addr) {
 	}
 }
 
+bool ISS::stimecmp_access_not_allowed(void)
+{
+	// ToDo: Fix me
+	assert(0);
+	return true/*!(csrs.menvcfg.words.high & MENVCFG_H_STCE_BIT) && !m_mode()*/;
+}
+
 uint64_t ISS::get_csr_value(uint64_t addr) {
 	validate_csr_counter_read_access_rights(addr);
 
@@ -1672,14 +1679,22 @@ void ISS::clear_external_interrupt(PrivilegeLevel level) {
 	}
 }
 
-void ISS::trigger_timer_interrupt(bool status) {
+void ISS::trigger_timer_interrupt(bool status, PrivilegeLevel sw_irq_type) {
+
+	assert(sw_irq_type == MachineMode);
+
 	if (trace)
 		std::cout << "[vp::iss] trigger timer interrupt=" << status << ", " << sc_core::sc_time_stamp() << std::endl;
+
 	csrs.mip.fields.mtip = status;
+
 	wfi_event.notify(sc_core::SC_ZERO_TIME);
 }
 
-void ISS::trigger_software_interrupt(bool status) {
+void ISS::trigger_software_interrupt(bool status, PrivilegeLevel sw_irq_type) {
+	// FIXME: not implemented yet for RV64
+	assert(sw_irq_type == MachineMode);
+
 	if (trace)
 		std::cout << "[vp::iss] trigger software interrupt=" << status << ", " << sc_core::sc_time_stamp() << std::endl;
 	csrs.mip.fields.msip = status;

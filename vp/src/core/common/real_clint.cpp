@@ -7,6 +7,9 @@ enum {
 	MSIP_BASE = 0,
 	MSIP_SIZE = 4,
 
+	SSIP_BASE = 0x1000,
+	SSIP_SIZE = 4,
+
 	MTIMECMP_BASE = 0x4000,
 	MTIMECMP_SIZE = 8,
 
@@ -16,6 +19,7 @@ enum {
 
 enum {
 	MSIP_MASK = 0x1, // The upper MSIP bits are tied to zero
+	SSIP_MASK = 0x1, // The upper SSIP bits are tied to zero
 };
 
 /* This is used to quantize a 1MHz value to the closest 32768Hz value */
@@ -29,10 +33,12 @@ timercb(void *arg) {
 
 RealCLINT::RealCLINT(sc_core::sc_module_name, std::vector<clint_interrupt_target*> &_harts)
 	: regs_msip(MSIP_BASE, MSIP_SIZE * _harts.size()),
+	  regs_ssip(SSIP_BASE, SSIP_SIZE * _harts.size()),
 	  regs_mtimecmp(MTIMECMP_BASE, MTIMECMP_SIZE * _harts.size()),
 	  regs_mtime(MTIME_BASE, MTIME_SIZE),
 
 	  msip(regs_msip),
+	  ssip(regs_ssip),
 	  mtimecmp(regs_mtimecmp),
 	  mtime(regs_mtime),
 
@@ -42,12 +48,13 @@ RealCLINT::RealCLINT(sc_core::sc_module_name, std::vector<clint_interrupt_target
 		timers.push_back(timer);
 	}
 
-	register_ranges.insert(register_ranges.end(), {&regs_mtimecmp, &regs_msip, &regs_mtime});
+	register_ranges.insert(register_ranges.end(), {&regs_mtimecmp, &regs_msip, &regs_ssip, &regs_mtime});
 	for (auto reg : register_ranges)
 		reg->alignment = 4;
 
 	regs_mtimecmp.post_write_callback = std::bind(&RealCLINT::post_write_mtimecmp, this, std::placeholders::_1);
 	regs_msip.post_write_callback = std::bind(&RealCLINT::post_write_msip, this, std::placeholders::_1);
+	regs_ssip.post_write_callback = std::bind(&RealCLINT::post_write_ssip, this, std::placeholders::_1);
 
 	regs_mtime.pre_read_callback = std::bind(&RealCLINT::pre_read_mtime, this, std::placeholders::_1);
 	regs_mtime.post_write_callback = std::bind(&RealCLINT::post_write_mtime, this, std::placeholders::_1);
@@ -97,10 +104,10 @@ void RealCLINT::post_write_mtimecmp(RegisterRange::WriteInfo info) {
 	timer->pause();
 
 	if (time >= cmp) {
-		harts.at(hart)->trigger_timer_interrupt(true);
+		harts.at(hart)->trigger_timer_interrupt(true, MachineMode);
 		return;
 	}
-	harts.at(hart)->trigger_timer_interrupt(false);
+	harts.at(hart)->trigger_timer_interrupt(false, MachineMode);
 
 	uint64_t goal_ticks = cmp - time;
 	usecs duration = ticks_to_usec(goal_ticks);
@@ -113,7 +120,15 @@ void RealCLINT::post_write_msip(RegisterRange::WriteInfo info) {
 	unsigned hart = info.addr / MSIP_SIZE;
 
 	msip.at(hart) &= MSIP_MASK;
-	harts.at(hart)->trigger_software_interrupt(msip.at(hart) != 0);
+	harts.at(hart)->trigger_software_interrupt(msip.at(hart) != 0, MachineMode);
+}
+
+void RealCLINT::post_write_ssip(RegisterRange::WriteInfo info) {
+	assert(info.addr % 4 == 0);
+	unsigned hart = info.addr / SSIP_SIZE;
+
+	ssip.at(hart) &= SSIP_MASK;
+	harts.at(hart)->trigger_software_interrupt(ssip.at(hart) != 0, SupervisorMode);
 }
 
 void RealCLINT::post_write_mtime(RegisterRange::WriteInfo info) {
@@ -137,7 +152,7 @@ void RealCLINT::interrupt(void) {
 	for (size_t i = 0; i < harts.size(); i++) {
 		auto cmp = mtimecmp.at(i);
 		if (mtime >= cmp)
-			harts.at(i)->trigger_timer_interrupt(true);
+			harts.at(i)->trigger_timer_interrupt(true, MachineMode);
 	}
 }
 

@@ -32,7 +32,7 @@ FU540_PLIC::FU540_PLIC(sc_core::sc_module_name, unsigned harts) {
 	tsock.register_b_transport(this, &FU540_PLIC::transport);
 
 	SC_THREAD(run);
-};
+}
 
 void FU540_PLIC::create_registers(void) {
 	regs_interrupt_priorities.post_write_callback =
@@ -90,7 +90,7 @@ void FU540_PLIC::create_hart_regs(uint64_t addr, uint64_t inc, hartmap &map) {
 void FU540_PLIC::transport(tlm::tlm_generic_payload &trans, sc_core::sc_time &delay) {
 	delay += 4 * clock_cycle; /* copied from FE310_PLIC */
 	vp::mm::route("FU540_PLIC", register_ranges, trans, delay);
-};
+}
 
 void FU540_PLIC::gateway_trigger_interrupt(uint32_t irq) {
 	if (irq == 0 || irq > NUMIRQ)
@@ -98,7 +98,7 @@ void FU540_PLIC::gateway_trigger_interrupt(uint32_t irq) {
 
 	pending_interrupts[GET_IDX(irq)] |= GET_OFF(irq);
 	e_run.notify(clock_cycle);
-};
+}
 
 bool FU540_PLIC::read_hartctx(RegisterRange::ReadInfo t, unsigned int hart, PrivilegeLevel level) {
 	assert(t.addr % sizeof(uint32_t) == 0);

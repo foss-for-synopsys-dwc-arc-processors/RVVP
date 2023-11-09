@@ -123,7 +123,10 @@ struct GenericMMU {
     }
 
     vm_info decode_vm_info(PrivilegeLevel prv) {
-        assert(prv <= SupervisorMode);
+        // TODO: check if assert is correct. Previous condition assert(prv <= SupervisorMode) won't
+        // work with new PrivilegeLevel definitions, though it's not clear if we can allow virtual
+        // modes here.
+        assert(prv != MachineMode);
         uint64_t ptbase = (uint64_t)core.csrs.satp.fields.ppn << PGSHIFT;
         unsigned mode = core.csrs.satp.fields.mode;
         switch (mode) {
@@ -248,6 +251,8 @@ struct GenericMMU {
                 break;
             case STORE:
                 raise_trap(EXC_STORE_AMO_PAGE_FAULT, vaddr);
+                break;
+            default:
                 break;
         }
 

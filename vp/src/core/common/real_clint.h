@@ -35,10 +35,12 @@ public:
 	typedef Timer::usecs usecs;
 
 	RegisterRange regs_msip;
+	RegisterRange regs_ssip;
 	RegisterRange regs_mtimecmp;
 	RegisterRange regs_mtime;
 
 	ArrayView<uint32_t> msip;
+	ArrayView<uint32_t> ssip;
 	ArrayView<uint64_t> mtimecmp;
 	IntegerView<uint64_t> mtime;
 
@@ -52,6 +54,7 @@ public:
 
 	void post_write_mtimecmp(RegisterRange::WriteInfo info);
 	void post_write_msip(RegisterRange::WriteInfo info);
+	void post_write_ssip(RegisterRange::WriteInfo info);
 	void post_write_mtime(RegisterRange::WriteInfo info);
 	bool pre_read_mtime(RegisterRange::ReadInfo info);
 

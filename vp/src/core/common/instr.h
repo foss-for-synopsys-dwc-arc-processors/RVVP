@@ -101,6 +101,21 @@ enum Parts {
 	F3_CSRRWI = 0b101,
 	F3_CSRRSI = 0b110,
 	F3_CSRRCI = 0b111,
+	// Hypervisor extension
+	F3_HV =     0b100,
+	F7_HLVB =   0b0110000,
+	RS2_HLVB =  0b00000,
+	RS2_HLVBU = 0b00001,
+	F7_HLVH =   0b0110010,
+	RS2_HLVH =  0b00000,
+	RS2_HLVHU = 0b00001,
+	F7_HLVW =   0b0110100,
+	RS2_HLVW =  0b00000,
+	RS2_HLVXHU = 0b00011,
+	RS2_HLVXWU = 0b00011,
+	F7_HSVB =   0b0110001,
+	F7_HSVH =   0b0110011,
+	F7_HSVW =   0b0110101,
 
 	OP_AMO = 0b0101111,
 	F5_LR_W = 0b00010,
@@ -421,6 +436,18 @@ enum Mapping {
 	WFI,
 	SFENCE_VMA,
 
+	// Hypervisor extension: VM load and store
+	HLVB,
+	HLVBU,
+	HLVH,
+	HLVHU,
+	HLVW,
+	HLVXHU,
+	HLVXWU,
+	HSVB,
+	HSVH,
+	HSVW,
+
 	NUMBER_OF_INSTRUCTIONS
 };
 
@@ -434,6 +461,8 @@ enum class Type {
 	U,
 	J,
 	R4,
+	CSR,
+	CSRI,
 };
 
 extern std::array<const char*, NUMBER_OF_INSTRUCTIONS> mappingStr;
@@ -624,6 +653,26 @@ struct Instruction {
 	inline uint32_t data() {
 		return instr;
 	}
+
+	inline uint32_t set_xtinst_for_opld(uint32_t xtinst) {
+		xtinst ^= BIT_RANGE(xtinst, 31, 25);
+		xtinst ^= BIT_RANGE(xtinst, 24, 20);
+		xtinst ^= BIT_RANGE(xtinst, 19, 15); //TODO: Addr offset field is zero for now
+		return xtinst;
+	}
+
+	inline uint32_t set_xtinst_for_opst(uint32_t xtinst) {
+		xtinst ^= BIT_RANGE(xtinst, 31, 25);
+		xtinst ^= BIT_RANGE(xtinst, 19, 15); //TODO: Addr offset field is zero for now
+		xtinst ^= BIT_RANGE(xtinst, 11, 7);
+		return xtinst;
+	}
+
+	inline uint32_t inst_set_addr_offs_to_zero(uint32_t xtinst) {
+		return xtinst ^ BIT_RANGE(xtinst, 19, 15);
+	}
+
+	uint32_t get_xtinst(void);
 
    private:
 	// use signed variable to have correct sign extension in immediates

@@ -2,8 +2,7 @@
 #define RISCV_VP_MMU_MEM_IF_H
 
 #include <stdint.h>
-
-enum MemoryAccessType { FETCH, LOAD, STORE };
+#include "core/common/protected_access.h"
 
 struct mmu_memory_if {
     virtual ~mmu_memory_if() {}
