@@ -4,8 +4,16 @@
 #include "trap-codes.h"
 #include "irq-helpers.h"
 
+// IID / pending formats:
+// - LFMT - Local Format, as visible in xip for corresponding level:
+//          M/HS interrupts are in M/HS places (as visible in mip)
+//          VS interrupts are in S places (as visible in vsip)
+// - MFMT - M-level Format, as visible in mip: VS interrupts are in VS places
+
 
 namespace rv32 {
+
+#define BIT(n)  (1ULL << (n))
 
 struct MajorOrderHolder {
 	static constexpr uint32_t MAX_INTERRUPTS_NUM = 64;
@@ -100,10 +108,11 @@ struct major_irq : MajorOrderHolder {
 
 	// 0 = interrupt has higher default priority than an EI
 	// 1 = interrupt has lower default priority than an EI
+	// IID is in LFMT
 	static enum dpo get_dpo(PrivilegeLevel target_level, uint32_t iid) {
 		assert(is_valid(iid));
 
-		uint32_t target_level_external_irq = get_external_iid(target_level);
+		uint32_t target_level_external_irq = get_external_iid_lfmt(target_level);
 		uint32_t external_irq_order = to_order(target_level_external_irq);
 		uint32_t lookup_irq_order = to_order(iid);
 
@@ -142,7 +151,19 @@ struct major_irq : MajorOrderHolder {
 		}
 	}
 
-	static uint32_t transform_vs_to_s(uint32_t vs_iid) {
+	static uint32_t get_external_iid_lfmt(PrivilegeLevel target_level) {
+		switch (target_level) {
+			case MachineMode:
+				return EXC_M_EXTERNAL_INTERRUPT;
+			case SupervisorMode:
+			case VirtualSupervisorMode:
+				return EXC_S_EXTERNAL_INTERRUPT;
+			default:
+				assert(false);
+		}
+	}
+
+	static uint32_t transform_vs_iid_mfmt_to_lfmt(uint32_t vs_iid) {
 		assert(is_valid(vs_iid));
 
 		// 12 - 63 - 1:1 mapping
@@ -159,22 +180,17 @@ struct major_irq : MajorOrderHolder {
 			assert(false);
 	}
 
-	// bool : tranformable, uint32_t : iid
-	static std::tuple<bool, uint32_t> transform_s_to_vs(uint32_t s_iid) {
-		assert(is_valid(s_iid));
+	static uint64_t transform_vs_pend_mfmt_to_lfmt(uint64_t vs_pending_mfmt) {
+		uint64_t vs_pending_lfmt = 0;
 
-		// 12 - 63 - 1:1 mapping
-		// 0  - 11 - VS standard irqs are shifted to S places. Other irqs are not supported
-		if (s_iid == EXC_S_EXTERNAL_INTERRUPT)
-			return {true, EXC_VS_EXTERNAL_INTERRUPT};
-		else if (s_iid == EXC_S_TIMER_INTERRUPT)
-			return {true, EXC_VS_TIMER_INTERRUPT};
-		else if (s_iid == EXC_S_SOFTWARE_INTERRUPT)
-			return {true, EXC_VS_SOFTWARE_INTERRUPT};
-		else if (s_iid > EXC_M_EXTERNAL_INTERRUPT)
-			return {true, s_iid};
-		else
-			return {false, 0};
+		for (uint32_t iid = 0; iid < MAX_INTERRUPTS_NUM; iid++) {
+			if (vs_pending_mfmt & BIT(iid)) {
+				uint32_t s_iid = transform_vs_iid_mfmt_to_lfmt(iid);
+				vs_pending_lfmt |= BIT(s_iid);
+			}
+		}
+
+		return vs_pending_lfmt;
 	}
 
 	static constexpr std::array<uint8_t, MAX_INTERRUPTS_NUM> order = create_order();
@@ -203,13 +219,14 @@ struct irq_cprio {
 		assert(is_upper_bound_valid_minor_iid(eiid));
 		cprio = 0;
 		fields.iprio = eiid;
-		fields.order = major_irq::to_order(major_irq::get_external_iid(level));
+
+		fields.order = major_irq::to_order(major_irq::get_external_iid_lfmt(level));
 	}
 	// local irq
+	// iid is in LFMT
 	irq_cprio(PrivilegeLevel level, uint32_t iid, uint8_t iprio) {
 		assert(is_irq_capable_level(level));
 		cprio = 0;
-		// NOTE: for VS level we have iprio available on S interrupt places (so we have to itrerate with S major interrupt numbers)
 		fields.iprio = iprio;
 		fields.order = major_irq::to_order(iid);
 
@@ -218,10 +235,10 @@ struct irq_cprio {
 		}
 	}
 	// local hvictl-injected irq
+	// iid is in LFMT
 	irq_cprio(PrivilegeLevel level, uint32_t iid, uint8_t iprio, bool dpr) {
-		assert(is_irq_capable_level(level));
+		assert(level == VirtualSupervisorMode);
 		cprio = 0;
-		// NOTE: for VS level we have iprio available on S interrupt places (so we have to itrerate with S major interrupt numbers)
 		fields.iprio = iprio;
 		// hvictl-injected irq can be compared only to VS external irq, so we set
 		// order to MIN/MAX depending on dpr

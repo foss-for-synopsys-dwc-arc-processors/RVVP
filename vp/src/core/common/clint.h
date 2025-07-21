@@ -122,8 +122,11 @@ struct CLINT : public clint_if, public sc_core::sc_module {
 	void post_write_ssip(RegisterRange::WriteInfo t) {
 		assert(t.addr % 4 == 0);
 		unsigned idx = t.addr / 4;
-		ssip[idx] &= 0x1;
-		target_harts[idx]->trigger_software_interrupt(ssip[idx] != 0, SupervisorMode);
+
+		if (ssip[idx]) {
+			target_harts[idx]->trigger_software_interrupt(true, SupervisorMode);
+			ssip[idx] = 0;
+		}
 	}
 
 	void transport(tlm::tlm_generic_payload &trans, sc_core::sc_time &delay) {

@@ -1444,6 +1444,10 @@ void ISS::stimecmp_access_check(void) {
 	if (!csrs.menvcfgh.fields.stce && !m_mode()) {
 		raise_trap(EXC_ILLEGAL_INSTR, instr.data());
 	}
+
+	if (csrs.clint.is_iid_injected(SupervisorMode, EXC_S_TIMER_INTERRUPT) && !m_mode()) {
+		raise_trap(EXC_ILLEGAL_INSTR, instr.data());
+	}
 }
 
 void ISS::vstimecmp_access_check(void) {
@@ -1686,12 +1690,20 @@ uint32_t ISS::get_csr_value(uint32_t addr) {
 			vstimecmp_access_check();
 			return csrs.timecontrol.vstimecmp.words.high;
 
-		case MIREG_ADDR:
 		case MIREG2_ADDR:
 		case MIREG3_ADDR:
 		case MIREG4_ADDR:
 		case MIREG5_ADDR:
-		case MIREG6_ADDR: {
+		case MIREG6_ADDR:
+			if (is_irq_icsr(csrs.miselect.reg)) {
+				// If extension Smcsrind is also implemented, then when miselect has a value in the range 0x30-0x3F
+				// or 0x70-0xFF, attempts to access alias CSRs mireg2 through mireg6 raise an illegal instruction
+				// exception.
+				RAISE_ILLEGAL_INSTRUCTION();
+			}
+			[[fallthrough]];
+		case MIREG_ADDR: {
+			// TODO: revisit this offset logic, it should be only for specific iCSRs
 			unsigned icsr_addr = csrs.miselect.reg + xireg_to_xselect_offset(addr);
 
 			if (!icsrs_m.is_valid_addr(icsr_addr)) {
@@ -1704,12 +1716,20 @@ uint32_t ISS::get_csr_value(uint32_t addr) {
 		case SISELECT_ADDR:
 			return read(csrs.siselect, SISELECT_MASK);
 
-		case SIREG_ADDR:
 		case SIREG2_ADDR:
 		case SIREG3_ADDR:
 		case SIREG4_ADDR:
 		case SIREG5_ADDR:
-		case SIREG6_ADDR: {
+		case SIREG6_ADDR:
+			if (is_irq_icsr(csrs.siselect.reg)) {
+				// If extension Smcsrind is also implemented, then when siselect has a value in the range 0x30-0x3F
+				// or 0x70-0xFF, attempts to access alias CSRs sireg2 through sireg6 raise an illegal instruction
+				// exception.
+				RAISE_ILLEGAL_INSTRUCTION();
+			}
+			[[fallthrough]];
+		case SIREG_ADDR: {
+			// TODO: revisit this offset logic, it should be only for specific iCSRs
 			unsigned icsr_addr = csrs.siselect.reg + xireg_to_xselect_offset(addr);
 
 			if (!icsrs_s.is_valid_addr(icsr_addr)) {
@@ -1724,12 +1744,22 @@ uint32_t ISS::get_csr_value(uint32_t addr) {
 		case VSISELECT_ADDR:
 			return read(csrs.vsiselect, VSISELECT_MASK);
 
-		case VSIREG_ADDR:
+
 		case VSIREG2_ADDR:
 		case VSIREG3_ADDR:
 		case VSIREG4_ADDR:
 		case VSIREG5_ADDR:
-		case VSIREG6_ADDR: {
+		case VSIREG6_ADDR:
+			if (is_irq_icsr(csrs.vsiselect.reg)) {
+				// If extension Sscsrind is also implemented, then when vsiselect has a value in the range 0x30-0x3F
+				// or 0x70-0xFF, attempts from M-mode or HS-mode to access alias CSRs vsireg2 through vsireg6
+				// raise an illegal instruction exception, and attempts from VS-mode to access sireg2 through sireg6
+				// raise a virtual instruction exception.
+				vs_csr_icsrs_access_exception();
+			}
+			[[fallthrough]];
+		case VSIREG_ADDR: {
+			// TODO: revisit this offset logic, it should be only for specific iCSRs
 			unsigned icsr_addr = csrs.vsiselect.reg + xireg_to_xselect_offset(addr);
 
 			vs_icsrs_access_check(icsr_addr);
@@ -1802,6 +1832,8 @@ void ISS::set_csr_value(uint32_t addr, uint32_t value, bool read_accessed) {
 
 		case HSTATUS_ADDR:
 			csrs.hstatus.checked_write(value);
+			// NV mode presence in vstvec depends on hstatus.vgein
+			sync_xtvec_nv_presence();
 
 			// proces everything we need to do after switching to new guest
 			on_guest_switch();
@@ -1853,6 +1885,7 @@ void ISS::set_csr_value(uint32_t addr, uint32_t value, bool read_accessed) {
 
 		case csr_hvictl::HVICTL_ADDR:
 			csrs.hvictl.checked_write(value);
+			sync_xtvec_nv_presence();
 			break;
 
 		case csr_hgeie::HGEIE_ADDR:
@@ -1892,6 +1925,10 @@ void ISS::set_csr_value(uint32_t addr, uint32_t value, bool read_accessed) {
 
 		case SCOUNTEREN_ADDR:
 			write(csrs.scounteren, MCOUNTEREN_MASK);
+			break;
+
+		case HCOUNTEREN_ADDR:
+			write(csrs.hcounteren, MCOUNTEREN_MASK);
 			break;
 
 		case MCOUNTINHIBIT_ADDR:
@@ -1967,12 +2004,19 @@ void ISS::set_csr_value(uint32_t addr, uint32_t value, bool read_accessed) {
 			clint->post_write_xtimecmp();
 			return;
 
-		case MIREG_ADDR:
 		case MIREG2_ADDR:
 		case MIREG3_ADDR:
 		case MIREG4_ADDR:
 		case MIREG5_ADDR:
-		case MIREG6_ADDR: {
+		case MIREG6_ADDR:
+			if (is_irq_icsr(csrs.miselect.reg)) {
+				// If extension Smcsrind is also implemented, then when miselect has a value in the range 0x30-0x3F
+				// or 0x70-0xFF, attempts to access alias CSRs mireg2 through mireg6 raise an illegal instruction
+				// exception.
+				RAISE_ILLEGAL_INSTRUCTION();
+			}
+			[[fallthrough]];
+		case MIREG_ADDR: {
 			unsigned icsr_addr = csrs.miselect.reg + xireg_to_xselect_offset(addr);
 
 			if (!icsrs_m.is_valid_addr(icsr_addr)) {
@@ -1997,12 +2041,19 @@ void ISS::set_csr_value(uint32_t addr, uint32_t value, bool read_accessed) {
 			write(csrs.siselect, SISELECT_MASK);
 			break;
 
-		case SIREG_ADDR:
 		case SIREG2_ADDR:
 		case SIREG3_ADDR:
 		case SIREG4_ADDR:
 		case SIREG5_ADDR:
-		case SIREG6_ADDR: {
+		case SIREG6_ADDR:
+			if (is_irq_icsr(csrs.siselect.reg)) {
+				// If extension Smcsrind is also implemented, then when siselect has a value in the range 0x30-0x3F
+				// or 0x70-0xFF, attempts to access alias CSRs sireg2 through sireg6 raise an illegal instruction
+				// exception.
+				RAISE_ILLEGAL_INSTRUCTION();
+			}
+			[[fallthrough]];
+		case SIREG_ADDR: {
 			unsigned icsr_addr = csrs.siselect.reg + xireg_to_xselect_offset(addr);
 
 			if (!icsrs_s.is_valid_addr(icsr_addr))
@@ -2024,12 +2075,20 @@ void ISS::set_csr_value(uint32_t addr, uint32_t value, bool read_accessed) {
 			write(csrs.vsiselect, VSISELECT_MASK);
 			break;
 
-		case VSIREG_ADDR:
 		case VSIREG2_ADDR:
 		case VSIREG3_ADDR:
 		case VSIREG4_ADDR:
 		case VSIREG5_ADDR:
-		case VSIREG6_ADDR: {
+		case VSIREG6_ADDR:
+			if (is_irq_icsr(csrs.vsiselect.reg)) {
+				// If extension Sscsrind is also implemented, then when vsiselect has a value in the range 0x30-0x3F
+				// or 0x70-0xFF, attempts from M-mode or HS-mode to access alias CSRs vsireg2 through vsireg6
+				// raise an illegal instruction exception, and attempts from VS-mode to access sireg2 through sireg6
+				// raise a virtual instruction exception.
+				vs_csr_icsrs_access_exception();
+			}
+			[[fallthrough]];
+		case VSIREG_ADDR: {
 			unsigned icsr_addr = csrs.vsiselect.reg + xireg_to_xselect_offset(addr);
 
 			vs_icsrs_access_check(icsr_addr);
@@ -2163,6 +2222,7 @@ void ISS::update_interrupt_mode(PrivilegeLevel level) {
 		case VirtualSupervisorMode:
 			// TODO: how to implement it?
 			// what should happen if we changed vstvec when IMSIC is disconnected?
+			// FIXME: how that may also happen when we write hstatus.vgein = 0
 			if (csrs.hstatus.is_imsic_connected()) {
 				unsigned current_guest = csrs.hstatus.get_guest_id();
 
@@ -2179,6 +2239,19 @@ void ISS::update_interrupt_mode(PrivilegeLevel level) {
 	}
 }
 
+void ISS::sync_xtvec_nv_presence(void) {
+	// S-mode
+	bool s_nv_present = csrs.clint.mideleg.mideleg_routed_read_64() & BIT(EXC_S_EXTERNAL_INTERRUPT);
+	csrs.stvec.mark_nested_vectored_present(s_nv_present);
+
+	// VS-mode
+	bool vs_nv_present = (csrs.clint.mideleg.mideleg_routed_read_64() & BIT(EXC_VS_EXTERNAL_INTERRUPT)) &&
+						 (csrs.clint.hideleg.hideleg_routed_read_64() & BIT(EXC_VS_EXTERNAL_INTERRUPT)) &&
+						 csrs.hvictl.is_ipriom_full_mode() &&
+						 csrs.hstatus.is_imsic_connected();
+	csrs.vstvec.mark_nested_vectored_present(vs_nv_present);
+}
+
 void ISS::on_xtvec_write(PrivilegeLevel level) {
 	update_interrupt_mode(level);
 }
@@ -2187,8 +2260,9 @@ void ISS::on_xenvcfgh_write(void) {
 	// When STCE in menvcfg is zero:
 	//  -  STCE in henvcfg is read-only zero
 	//  -  STIP in mip and sip reverts to its defined behavior as if this extension is not implemented.
-	if (csrs.menvcfgh.fields.stce) {
+	if (csrs.menvcfgh.is_timer_enabled()) {
 		csrs.henvcfgh.make_stce_present(true);
+		// TODO: when enabling timer, we must set interrupt pending bit in clint if timer was fired before
 	} else {
 		csrs.henvcfgh.make_stce_present(false);
 		// TODO: mask stie
@@ -2198,7 +2272,9 @@ void ISS::on_xenvcfgh_write(void) {
 
 	// When STCE in menvcfg is one but STCE in henvcfg is zero:
 	//  -  VSTIP in hip reverts to its defined behavior as if this extension is not implemented
-	if (!csrs.henvcfgh.fields.stce) {
+	if (csrs.henvcfgh.is_timer_enabled()) {
+		// TODO: when enabling timer, we must set interrupt pending bit in clint if timer was fired before
+	} else {
 		// TODO: mask vstip
 		// csrs.clint.mip.fields.vstip = 0;
 		csrs.clint.mip.hw_write_mip(EXC_VS_TIMER_INTERRUPT, false);
@@ -2391,9 +2467,9 @@ void ISS::trigger_timer_interrupt(bool status, PrivilegeLevel timer) {
 
 	if (timer == MachineMode)
 		clint_hw_irq_route(EXC_M_TIMER_INTERRUPT, status);
-	else if (timer == SupervisorMode)
+	else if (timer == SupervisorMode && csrs.menvcfgh.is_timer_enabled())
 		clint_hw_irq_route(EXC_S_TIMER_INTERRUPT, status);
-	else if (timer == VirtualSupervisorMode)
+	else if (timer == VirtualSupervisorMode && csrs.henvcfgh.is_timer_enabled())
 		clint_hw_irq_route(EXC_VS_TIMER_INTERRUPT, status);
 	else
 		assert(false);
@@ -2421,8 +2497,6 @@ uint64_t ISS::get_xtimecmp_level_csr(PrivilegeLevel level) {
 }
 
 void ISS::trigger_software_interrupt(bool status, PrivilegeLevel sw_irq_type) {
-	assert(is_valid_privilege_level(sw_irq_type));
-
 	if (trace)
 		std::cout << "[vp::iss] trigger " << PrivilegeLevelToStr(sw_irq_type) << " software interrupt=" << status << ", " << sc_core::sc_time_stamp() << std::endl;
 
@@ -2660,10 +2734,11 @@ void ISS::compute_imsic_pending_interrupts_vs(void) {
 	}
 }
 
+// iid is in MFMT (mip format)
 void ISS::clint_hw_irq_route(uint32_t iid, bool set) {
 	assert(major_irq::is_valid(iid));
 
-	PendingInterrupts old_pendings_0 = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts old_pendings_0 = compute_clint_pending_irq_bits_per_level_mfmt();
 
 	// update bit in HW mip
 	csrs.clint.mip.hw_write_mip(iid, set);
@@ -2680,7 +2755,7 @@ void ISS::iprio_icsr_access_adjust(void) {
 }
 
 void ISS::on_clint_csr_write(uint32_t addr, uint32_t value) {
-	PendingInterrupts old_pendings_0 = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts old_pendings_0 = compute_clint_pending_irq_bits_per_level_mfmt();
 
 	switch (addr) {
 		case csrs_clint_pend::xip::MIP_ADDR:
@@ -2761,16 +2836,20 @@ void ISS::on_clint_csr_write(uint32_t addr, uint32_t value) {
 
 		case csrs_clint_pend::csr_mideleg::MIDELEG_ADDR:
 			csrs.clint.mideleg.checked_write_mideleg(value);
+			sync_xtvec_nv_presence();
 			break;
 		case csrs_clint_pend::csr_mideleg::MIDELEGH_ADDR:
 			csrs.clint.mideleg.checked_write_midelegh(value);
+			sync_xtvec_nv_presence();
 			break;
 
 		case csrs_clint_pend::csr_hideleg::HIDELEG_ADDR:
 			csrs.clint.hideleg.checked_write_hideleg(value);
+			sync_xtvec_nv_presence();
 			break;
 		case csrs_clint_pend::csr_hideleg::HIDELEGH_ADDR:
 			csrs.clint.hideleg.checked_write_hidelegh(value);
+			sync_xtvec_nv_presence();
 			break;
 
 		default:
@@ -2784,8 +2863,9 @@ void ISS::on_clint_csr_write(uint32_t addr, uint32_t value) {
 }
 
 // deliver changes in CLINT state to IMSIC (if snps 3NV mode is selected)
+// pendings are in MFMT (mip format)
 void ISS::deliver_clint_changes_to_imsics(PendingInterrupts old_pendings_0) {
-	PendingInterrupts pendings_1 = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts pendings_1 = compute_clint_pending_irq_bits_per_level_mfmt();
 
 	for (unsigned int iid = 0; iid < major_irq::MAX_INTERRUPTS_NUM; iid++) {
 		deliver_pending_to_imsic(old_pendings_0, pendings_1, iid);
@@ -2795,8 +2875,9 @@ void ISS::deliver_clint_changes_to_imsics(PendingInterrupts old_pendings_0) {
 }
 
 // deliver single bit change (i.e. hw mip set) in CLINT state to IMSIC (if snps 3NV mode is selected)
+// iid and pendings are in MFMT (mip format)
 void ISS::deliver_clint_changes_to_imsics(PendingInterrupts old_pendings_0, uint32_t iid) {
-	PendingInterrupts pendings_1 = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts pendings_1 = compute_clint_pending_irq_bits_per_level_mfmt();
 
 	deliver_pending_to_imsic(old_pendings_0, pendings_1, iid);
 	cascade_pendings_to_imsics(pendings_1);
@@ -2805,17 +2886,18 @@ void ISS::deliver_clint_changes_to_imsics(PendingInterrupts old_pendings_0, uint
 void ISS::cascade_pendings_to_imsics(PendingInterrupts pendings_1) {
 	// pendings_2 - only to see if VS ext IRQ begin to pend for S level (not VS!)
 	// after previous routing
-	PendingInterrupts pendings_2 = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts pendings_2 = compute_clint_pending_irq_bits_per_level_mfmt();
 	// if VS ext IRQ is not delegated to VS level - than it will be written to S imsic here
 	deliver_pending_to_imsic(pendings_1, pendings_2, EXC_VS_EXTERNAL_INTERRUPT);
 
 	// pendings_3 - only to see if S ext IRQ begin to pend for M level (not S!)
 	// after previous routing
-	PendingInterrupts pendings_3 = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts pendings_3 = compute_clint_pending_irq_bits_per_level_mfmt();
 	// if S ext IRQ is not delegated to S level - than it will be written to M imsic here
 	deliver_pending_to_imsic(pendings_2, pendings_3, EXC_S_EXTERNAL_INTERRUPT);
 }
 
+// iid and pendings are in MFMT (mip format)
 void ISS::deliver_pending_to_imsic(PendingInterrupts prev_pendings, PendingInterrupts new_pendings, uint32_t iid) {
 	PrivilegeLevel imsic_level;
 	bool edge = false;
@@ -2853,8 +2935,8 @@ void ISS::deliver_pending_to_imsic(PendingInterrupts prev_pendings, PendingInter
 	if (trace)
 		printf("[vp::iss] deliver major irq [iid=%d] to %s imsic\n", iid, PrivilegeLevelToStr(imsic_level));
 
-	// TODO: VS shift here or not?
-	uint32_t minor_iid = get_iprio(imsic_level, iid);
+	// iid is in MFMT (mip format) here for all levels (including VS)
+	uint32_t minor_iid = get_iprio_mfmt(imsic_level, iid);
 	unsigned current_guest = csrs.hstatus.get_guest_id();
 	route_imsic_write(imsic_level, current_guest, minor_iid);
 }
@@ -2975,23 +3057,23 @@ struct irq_cprio ISS::get_external_cprio(PrivilegeLevel level) {
 	return get_external_cprio_generic(level);
 }
 
+// iid is in LFMT
 struct irq_cprio ISS::get_local_cprio(PrivilegeLevel level, uint32_t iid) {
 	assert(is_irq_capable_level(level));
 
-	if (level == VirtualSupervisorMode && csrs.hvictl.is_local_injected() && major_irq::transform_vs_to_s(iid) == csrs.hvictl.get_s_iid()) {
-		// VS IIDs are shown as VS here
+	if (level == VirtualSupervisorMode && csrs.hvictl.is_local_injected() && iid == csrs.hvictl.get_s_iid()) {
+		// VS IIDs are shown as S here (LFMT)
 		return irq_cprio(level, iid, csrs.hvictl.get_prio(), csrs.hvictl.fields.dpr);
 	}
 
-	// NOTE: IID should match the level here,
-	// so if the level is VS we need to pass EXC_VS_TIMER_INTERRUPT, not EXC_S_TIMER_INTERRUPT
-	// NOTE: internal order for standard local VS interrupts will be taken from VS - but
-	// it should be OK as we won't get real S interrupts in VS level
+	// NOTE: IID should be in LFMT, so if the level is VS we need
+	// to pass EXC_S_TIMER_INTERRUPT, not EXC_VS_TIMER_INTERRUPT
 	struct irq_cprio cprio(level, iid, get_iprio(level, iid));
 
 	return cprio;
 }
 
+// iid is in LFMT
 uint8_t ISS::get_iprio(PrivilegeLevel level, uint32_t iid) {
 	assert(is_irq_capable_level(level));
 
@@ -3000,16 +3082,25 @@ uint8_t ISS::get_iprio(PrivilegeLevel level, uint32_t iid) {
 	} else if (level == SupervisorMode) {
 		return icsrs_s.iprio.get_iprio(iid);
 	} else {
-		// NOTE: for VS level we have iprio available on S interrupt places,
-		// so we need to convert VS iid to S iid
-		iid = major_irq::transform_vs_to_s(iid);
+		// NOTE: for VS level we have iprio available on S interrupt places
+		// as we have iid in LFMT for VS level we can use it directly to access iprio array
 
 		// NOTE: if vgein = 0 we have extra iprio bank for that
 		return icsrs_vs.iprio[csrs.hstatus.get_vgein()].get_iprio(iid);
 	}
 }
 
+// iid is in MFMT
+uint8_t ISS::get_iprio_mfmt(PrivilegeLevel level, uint32_t iid) {
+	if (level == VirtualSupervisorMode) {
+		return get_iprio(level, major_irq::transform_vs_iid_mfmt_to_lfmt(iid));
+	} else {
+		return get_iprio(level, iid);
+	}
+}
+
 // TODO: we need to check hvictl here in case of VS level
+// iid is in LFMT
 struct irq_cprio ISS::major_irq_to_prio(PrivilegeLevel target_level, uint32_t iid) {
 	assert(major_irq::is_valid(iid));
 	assert(is_irq_capable_level(target_level));
@@ -3020,42 +3111,41 @@ struct irq_cprio ISS::major_irq_to_prio(PrivilegeLevel target_level, uint32_t ii
 	if (target_level == SupervisorMode && iid == EXC_S_EXTERNAL_INTERRUPT)
 		return get_external_cprio(SupervisorMode);
 
-	if (target_level == VirtualSupervisorMode && iid == EXC_VS_EXTERNAL_INTERRUPT)
+	// NOTE: iid is in LFMT for VS level
+	if (target_level == VirtualSupervisorMode && iid == EXC_S_EXTERNAL_INTERRUPT)
 		return get_external_cprio(VirtualSupervisorMode);
 
-	// NOTE: IID should match the level here,
-	// so if the level is VS we need to pass EXC_VS_TIMER_INTERRUPT, not EXC_S_TIMER_INTERRUPT
+	// NOTE: IID should be in LFMT, so if the level is VS we need
+	// to pass EXC_S_TIMER_INTERRUPT, not EXC_VS_TIMER_INTERRUPT
 	return get_local_cprio(target_level, iid);
 }
 
 // TODO: we can relax checks later
+// irqs_pend is in LFMT
 void ISS::sanitize_vs_external_pend(PendingInterrupts &irqs_pend) {
-	constexpr uint64_t vs_ext_irq = BIT(EXC_VS_EXTERNAL_INTERRUPT);
-
-	assert(!(irqs_pend.m_pending & vs_ext_irq));
+	assert(!(irqs_pend.m_pending & BIT(EXC_VS_EXTERNAL_INTERRUPT)));
 
 	// TODO: use is_iid_injected()
 	if (!csrs.hstatus.is_imsic_connected() && !(csrs.clint.hvirt.hvip & BIT(EXC_VS_EXTERNAL_INTERRUPT))) {
-		assert(!(irqs_pend.s_hs_pending & vs_ext_irq));
-		assert(!(irqs_pend.vs_pending & vs_ext_irq));
+		assert(!(irqs_pend.s_hs_pending & BIT(EXC_VS_EXTERNAL_INTERRUPT)));
+		assert(!(irqs_pend.vs_pending & BIT(EXC_S_EXTERNAL_INTERRUPT)));
 	}
 
 	// if nested vectored mode - only external irq should be checked among pendings
-	constexpr uint64_t non_ext_irqs = ~(BIT(EXC_M_EXTERNAL_INTERRUPT) | BIT(EXC_S_EXTERNAL_INTERRUPT) | BIT(EXC_VS_EXTERNAL_INTERRUPT));
-
 	if (is_irq_mode_snps_nested_vectored(MachineMode)) {
-		assert(!(irqs_pend.m_pending & non_ext_irqs));
+		assert(!(irqs_pend.m_pending & ~BIT(EXC_M_EXTERNAL_INTERRUPT)));
 	}
 
 	if (is_irq_mode_snps_nested_vectored(SupervisorMode)) {
-		assert(!(irqs_pend.s_hs_pending & non_ext_irqs));
+		assert(!(irqs_pend.s_hs_pending & ~BIT(EXC_S_EXTERNAL_INTERRUPT)));
 	}
 
 	if (is_irq_mode_snps_nested_vectored(VirtualSupervisorMode)) {
-		assert(!(irqs_pend.vs_pending & non_ext_irqs));
+		assert(!(irqs_pend.vs_pending & ~BIT(EXC_S_EXTERNAL_INTERRUPT)));
 	}
 }
 
+// levels_pending are in LFMT
 std::tuple<uint32_t, uint8_t> ISS::major_irq_prepare_iid_prio(PrivilegeLevel level, uint64_t levels_pending) {
 	struct irq_cprio cprio(irq_cprio::LOWEST_NONEXISTING_CPRIO);
 	uint32_t iid = 0;
@@ -3074,7 +3164,7 @@ std::tuple<uint32_t, uint8_t> ISS::major_irq_prepare_iid_prio(PrivilegeLevel lev
 	if (cprio.is_non_existing())
 		throw std::runtime_error("some pending interrupt must be available here");
 
-	// NOTE: IID is in M-level format (can't be put to vstopi directly)
+	// NOTE: IID is in LFMT (can be put to vstopi directly)
 	return {iid, cprio.to_iprio()};
 }
 
@@ -3088,11 +3178,18 @@ void ISS::recalc_sgeip(void) {
 	clint_hw_irq_route(EXC_S_GUEST_EXTERNAL_INTERRUPT, pending != 0);
 }
 
+// vs_pending is in LFMT
 void ISS::recalc_xtopi(PendingInterrupts &irqs_pend) {
 	sanitize_vs_external_pend(irqs_pend);
 
 	if (irqs_pend.m_pending) {
 		auto [exc, iprio] = major_irq_prepare_iid_prio(MachineMode, irqs_pend.m_pending);
+
+		if (trace && (exc != csrs.mtopi.fields.iid || iprio != csrs.mtopi.fields.iprio)) {
+			printf("[vp::iss] mtopi changed from iid=%u, iprio=%u to iid=%u, iprio=%u\n",
+			       csrs.mtopi.fields.iid, csrs.mtopi.fields.iprio, exc, iprio);
+		}
+
 		csrs.mtopi.fields.iid = exc;
 		csrs.mtopi.fields.iprio = iprio;
 	} else {
@@ -3101,6 +3198,12 @@ void ISS::recalc_xtopi(PendingInterrupts &irqs_pend) {
 
 	if (irqs_pend.s_hs_pending) {
 		auto [exc, iprio] = major_irq_prepare_iid_prio(SupervisorMode, irqs_pend.s_hs_pending);
+
+		if (trace && (exc != csrs.stopi.fields.iid || iprio != csrs.stopi.fields.iprio)) {
+			printf("[vp::iss] stopi changed from iid=%u, iprio=%u to iid=%u, iprio=%u\n",
+			       csrs.stopi.fields.iid, csrs.stopi.fields.iprio, exc, iprio);
+		}
+
 		csrs.stopi.fields.iid = exc;
 		csrs.stopi.fields.iprio = iprio;
 	} else {
@@ -3108,10 +3211,13 @@ void ISS::recalc_xtopi(PendingInterrupts &irqs_pend) {
 	}
 
 	if (irqs_pend.vs_pending) {
+		// vs_pending is in LFMT (VS interrupts are on S places)
 		auto [exc, iprio] = major_irq_prepare_iid_prio(VirtualSupervisorMode, irqs_pend.vs_pending);
 
-		// place VS interrupts on S places
-		exc = major_irq::transform_vs_to_s(exc);
+		if (trace && (exc != csrs.vstopi.fields.iid || iprio != csrs.vstopi.fields.iprio)) {
+			printf("[vp::iss] vstopi changed from iid=%u, iprio=%u to iid=%u, iprio=%u\n",
+			       csrs.vstopi.fields.iid, csrs.vstopi.fields.iprio, exc, iprio);
+		}
 
 		csrs.vstopi.fields.iid = exc;
 		csrs.vstopi.fields.iprio = iprio;
@@ -3172,7 +3278,7 @@ PrivilegeLevel ISS::compute_pending_interrupt(PendingInterrupts &irqs_pend) {
 }
 
 std::tuple<PrivilegeLevel, bool> ISS::prepare_interrupt(void) {
-	PendingInterrupts irqs_pend = compute_clint_pending_irq_bits_per_level();
+	PendingInterrupts irqs_pend = compute_system_pending_irq_bits_per_level_lfmt();
 
 	irqs_pend = process_clint_pending_irq_bits_per_level(irqs_pend);
 
@@ -3246,29 +3352,32 @@ bool ISS::is_irq_globaly_enable_per_level(PrivilegeLevel target_mode) {
 	}
 }
 
-struct PendingInterrupts ISS::compute_clint_pending_irq_bits_per_level(void) {
-	uint64_t m_pending = csrs.clint.mie.reg & csrs.clint.mip.reg & ~csrs.clint.mideleg.checked_read_mideleg_64();
+struct PendingInterrupts ISS::compute_clint_pending_irq_bits_per_level_mfmt(void) {
+	// TODO: use mip_routed_read_64 as there is mip <-> hvip aliasing
+	uint64_t m_pending = csrs.clint.mip.mip_routed_read_64() & csrs.clint.mie.reg & ~csrs.clint.mideleg.mideleg_routed_read_64();
 
 	uint64_t s_pending = csrs.clint.mip.sip_routed_read_64() & csrs.clint.mie.sie_routed_read_64();
 	uint32_t hs_pending = csrs.clint.mip.checked_read_hip() & csrs.clint.mie.checked_read_hie();
-	uint64_t s_hs_pending = (s_pending | hs_pending) & ~csrs.clint.hideleg.checked_read_hideleg_64();
+	uint64_t s_hs_pending = (s_pending | hs_pending) & ~csrs.clint.hideleg.hideleg_routed_read_64();
 	uint64_t vs_pending = csrs.clint.mip.vsip_routed_read_64() & csrs.clint.mie.vsie_routed_read_64();
-
-	if (csrs.hvictl.is_local_injected()) {
-		vs_pending &= BIT(EXC_VS_EXTERNAL_INTERRUPT);
-		// NOTE: hvictl iid is in S format, (VS irqs are in S places, however we do all)
-		// processing in M format (VS irqs in VS places), so we do backward tranformation first
-		// However, it's only supported for real VS interrupts, which is not fully compatible
-		// to spec. TODO: fix this
-		auto [tranformable, iid] = major_irq::transform_s_to_vs(csrs.hvictl.get_s_iid());
-
-		if (tranformable)
-			vs_pending |= BIT(iid);
-	}
 
 	return {m_pending, s_hs_pending, vs_pending};
 }
 
+// this include the hvictl injection
+struct PendingInterrupts ISS::compute_system_pending_irq_bits_per_level_lfmt(void) {
+	PendingInterrupts pendings_mfmt = compute_clint_pending_irq_bits_per_level_mfmt();
+
+	uint64_t vs_pending_lfmt = major_irq::transform_vs_pend_mfmt_to_lfmt(pendings_mfmt.vs_pending);
+
+	if (csrs.hvictl.is_local_injected()) {
+		vs_pending_lfmt |= BIT(csrs.hvictl.get_s_iid());
+	}
+
+	return {pendings_mfmt.m_pending, pendings_mfmt.s_hs_pending, vs_pending_lfmt};
+}
+
+// vs_pending is in LFMT
 struct PendingInterrupts ISS::process_clint_pending_irq_bits_per_level(PendingInterrupts & pendings) {
 	PendingInterrupts pendings_processed = pendings;
 
@@ -3284,8 +3393,9 @@ struct PendingInterrupts ISS::process_clint_pending_irq_bits_per_level(PendingIn
 		pendings_processed.s_hs_pending &= BIT(EXC_S_EXTERNAL_INTERRUPT);
 	}
 
+	// NOTE: vs_pending are in LFMT format, so VS interrupts are in S places
 	if (is_irq_mode_snps_nested_vectored(VirtualSupervisorMode)) {
-		pendings_processed.vs_pending &= BIT(EXC_VS_EXTERNAL_INTERRUPT);
+		pendings_processed.vs_pending &= BIT(EXC_S_EXTERNAL_INTERRUPT);
 	}
 
 	return pendings_processed;

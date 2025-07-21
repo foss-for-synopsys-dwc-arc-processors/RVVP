@@ -27,10 +27,6 @@ constexpr unsigned FS_INITIAL = 0b01;
 constexpr unsigned FS_CLEAN = 0b10;
 constexpr unsigned FS_DIRTY = 0b11;
 
-inline bool is_valid_privilege_level(PrivilegeLevel mode) {
-	return mode == MachineMode || mode == SupervisorMode || mode == UserMode;
-}
-
 namespace csr {
 template <typename T>
 inline bool is_bitset(T &csr, unsigned bitpos) {
@@ -175,6 +171,7 @@ constexpr unsigned HSTATUS_ADDR = 0x600;
 constexpr uint32_t HEDELEG_MASK = 0b111000111111111;
 constexpr unsigned HEDELEG_ADDR = 0x602;
 
+constexpr unsigned HCOUNTEREN_ADDR = 0x606;
 constexpr unsigned HCONTEXT_ADDR = 0x6A8;
 constexpr unsigned HVIP_ADDR = 0x645;
 constexpr unsigned HTSP_ADDR = 0xAFF;
@@ -717,6 +714,10 @@ private:
 };
 
 struct csr_mtvec {
+	csr_mtvec(bool nested_vectored_present) {
+		mark_nested_vectored_present(nested_vectored_present);
+	}
+
 	union {
 		uint32_t reg = 0;
 		struct {
@@ -732,12 +733,25 @@ struct csr_mtvec {
 	enum Mode { Direct = 0, Vectored = 1, SnpsNestedVectored = 3 };
 
 	void checked_write(uint32_t val) {
-		reg = val;
+		reg = val & XTVEC_MASK;
 
 		// As per doc: setting bit#1 enforces setting bit#0
 		if (fields.mode != Direct && fields.mode != Vectored && fields.mode != SnpsNestedVectored)
 			fields.mode = SnpsNestedVectored;
 	}
+
+	void mark_nested_vectored_present(bool present) {
+		if (present) {
+			XTVEC_MASK = UINT32_MAX;
+		} else {
+			XTVEC_MASK &= ~MODE_BIT1;
+			reg &= XTVEC_MASK;
+		}
+	}
+private:
+	static constexpr uint32_t MODE_BIT1 = 0b10;
+	// Bit #1 writability (SnpsNestedVectored presence) depends on runtime state
+	uint32_t XTVEC_MASK = UINT32_MAX & ~(MODE_BIT1);
 };
 
 struct csr64_bit_ops {
@@ -786,85 +800,60 @@ struct csr64_bit_ops {
 };
 
 struct csrs_clint_pend {
-	// For each writable bit in sie, the corresponding bit shall be read-only zero in both hip and hie.
-	static constexpr uint32_t SIE_MASK = BIT(EXC_S_SOFTWARE_INTERRUPT) |
-					     BIT(EXC_S_TIMER_INTERRUPT) |
-					     BIT(EXC_S_EXTERNAL_INTERRUPT);
-	static constexpr uint32_t HIE_MASK = BIT(EXC_S_GUEST_EXTERNAL_INTERRUPT) |
-					     BIT(EXC_VS_SOFTWARE_INTERRUPT) |
-					     BIT(EXC_VS_TIMER_INTERRUPT) |
-					     BIT(EXC_VS_EXTERNAL_INTERRUPT);
-	static constexpr uint32_t MIE_MASK = BIT(EXC_M_SOFTWARE_INTERRUPT) |
-					     BIT(EXC_M_TIMER_INTERRUPT) |
-					     BIT(EXC_M_EXTERNAL_INTERRUPT) |
-					     SIE_MASK | HIE_MASK;
+	static constexpr uint64_t MIx_LEVELED_S_MASK =      BIT(EXC_S_SOFTWARE_INTERRUPT) |
+														BIT(EXC_S_TIMER_INTERRUPT) |
+														BIT(EXC_S_EXTERNAL_INTERRUPT);
 
-	static constexpr uint32_t VSIE_MASK = BIT(EXC_VS_SOFTWARE_INTERRUPT) |
-					      BIT(EXC_VS_TIMER_INTERRUPT) |
-					      BIT(EXC_VS_EXTERNAL_INTERRUPT);
+	static constexpr uint64_t MIx_LEVELED_VS_MASK =     BIT(EXC_VS_SOFTWARE_INTERRUPT) |
+														BIT(EXC_VS_TIMER_INTERRUPT) |
+														BIT(EXC_VS_EXTERNAL_INTERRUPT);
 
+	static constexpr uint64_t VSIx_LEVELED_VS_MASK =    BIT(EXC_S_SOFTWARE_INTERRUPT) |
+														BIT(EXC_S_TIMER_INTERRUPT) |
+														BIT(EXC_S_EXTERNAL_INTERRUPT);
 
+	static constexpr uint64_t MIx_LEVELED_H_MASK =      BIT(EXC_S_GUEST_EXTERNAL_INTERRUPT) |
+														MIx_LEVELED_VS_MASK;
 
-	static constexpr uint64_t MIx_VS_MASK = BIT(EXC_VS_SOFTWARE_INTERRUPT) |
-						BIT(EXC_VS_TIMER_INTERRUPT) |
-						BIT(EXC_VS_EXTERNAL_INTERRUPT);
-	static constexpr uint64_t VSIx_VS_MASK = BIT(EXC_S_SOFTWARE_INTERRUPT) |
-						BIT(EXC_S_TIMER_INTERRUPT) |
-						BIT(EXC_S_EXTERNAL_INTERRUPT);
+	static constexpr uint64_t MIx_LEVELED_M_MASK =      BIT(EXC_M_SOFTWARE_INTERRUPT) |
+														BIT(EXC_M_TIMER_INTERRUPT) |
+														BIT(EXC_M_EXTERNAL_INTERRUPT) |
+														MIx_LEVELED_S_MASK | MIx_LEVELED_H_MASK;
 
 	// first 12 bits
-	static constexpr uint64_t MIx_LEVELED_MASK = GENMASK(EXC_M_EXTERNAL_INTERRUPT, 0);
-	static constexpr uint64_t MIx_NON_LEVELED_MASK = BIT(EXC_COUNTER_OVREFLOW_INTERRUPT) |
-							 BIT(EXC_DEBUG_TRACE_INTERRUPT) |
-							 BIT(EXC_LOW_PRIO_RAS_INTERRUPT) |
-							 BIT(EXC_HIGH_PRIO_RAS_INTERRUPT) |
-							 BIT(EXC_WDT_INTERRUPT);
+	static constexpr uint64_t MIx_LEVELED_ALL_MASK = GENMASK(EXC_M_EXTERNAL_INTERRUPT, 0);
+	static constexpr uint64_t MIx_NON_LEVELED_S_VS_MASK = BIT(EXC_COUNTER_OVREFLOW_INTERRUPT) |
+														  BIT(EXC_DEBUG_TRACE_INTERRUPT) |
+														  BIT(EXC_LOW_PRIO_RAS_INTERRUPT) |
+														  BIT(EXC_HIGH_PRIO_RAS_INTERRUPT);
+	// WDT exists in M-mode only
+	static constexpr uint64_t MIx_NON_LEVELED_M_MASK = MIx_NON_LEVELED_S_VS_MASK | BIT(EXC_WDT_INTERRUPT);
+	///////
+	// Masks of all irqs present in corresponding level
+	static constexpr uint64_t MIx_IRQ_M_MASK =  MIx_LEVELED_M_MASK  | MIx_NON_LEVELED_M_MASK;
+	static constexpr uint64_t MIx_IRQ_S_MASK =  MIx_LEVELED_S_MASK  | MIx_NON_LEVELED_S_VS_MASK;
+	static constexpr uint64_t MIx_IRQ_H_MASK =  MIx_LEVELED_H_MASK;
+	static constexpr uint64_t MIx_IRQ_VS_MASK = MIx_LEVELED_VS_MASK | MIx_NON_LEVELED_S_VS_MASK;
 
-	// edge irqs - the standard ones
-	// TODO: do we treat WDT as edge or level IRQ? NOTE: It's edge here
-	static constexpr uint64_t MIx_IRQ_TYPE_EDGE_MASK = MIx_NON_LEVELED_MASK;
-	static constexpr uint64_t MIx_IRQ_TYPE_LEVL_MASK = MIE_MASK;
+	static_assert((MIx_IRQ_S_MASK & MIx_IRQ_H_MASK) == 0);
+	static_assert((MIx_IRQ_M_MASK & MIx_IRQ_S_MASK) == MIx_IRQ_S_MASK);
+	static_assert((MIx_IRQ_M_MASK & MIx_IRQ_H_MASK) == MIx_IRQ_H_MASK);
+
+	// edge type irqs
+	static constexpr uint64_t MIx_IRQ_TYPE_EDGE_MASK = BIT(EXC_S_SOFTWARE_INTERRUPT) |
+													   BIT(EXC_VS_SOFTWARE_INTERRUPT) |
+													   BIT(EXC_COUNTER_OVREFLOW_INTERRUPT) |
+													   BIT(EXC_DEBUG_TRACE_INTERRUPT) |
+													   BIT(EXC_LOW_PRIO_RAS_INTERRUPT) |
+													   BIT(EXC_HIGH_PRIO_RAS_INTERRUPT);
 
 	static constexpr uint32_t MIE_TO_VSIE_SHIFT = 1; // value we need to shift MIE to have VS bits on S bits place
 
-	// legacy masks
-	static_assert(MIE_MASK == 0b1111011101110);
-	static_assert(SIE_MASK == 0b0001000100010);
-	static_assert(HIE_MASK == 0b1010001000100);
-
-	static_assert(HIE_MASK ^ SIE_MASK);
-	static_assert((MIE_MASK & SIE_MASK) == SIE_MASK);
-	static_assert((MIE_MASK & HIE_MASK) == HIE_MASK);
-
 	struct xie : public csr64_bit_ops {
 		csrs_clint_pend & clint;
+		uint64_t reg = 0;
 
 		xie(struct csrs_clint_pend & clint) : clint(clint) {}
-
-		union {
-			uint64_t reg = 0;
-			struct {
-				unsigned wpri0 : 1;
-				unsigned ssie : 1;
-				unsigned vssie : 1;
-				unsigned msie : 1;
-
-				unsigned wpri1 : 1;
-				unsigned stie : 1;
-				unsigned vstie : 1;
-				unsigned mtie : 1;
-
-				unsigned wpri2 : 1;
-				unsigned seie : 1;
-				unsigned vseie : 1;
-				unsigned meie : 1;
-
-				unsigned sgeie : 1;
-
-				unsigned wpri4 : 19;
-				unsigned wiri5 : 32;
-			} fields;
-		};
 
 		uint64_t sie_routed_read_64(void) {
 			auto [delegated, injected] = clint.s_route_masks();
@@ -874,14 +863,14 @@ struct csrs_clint_pend {
 			// shadow enable
 			injected &= clint.mvirt.shadow_enables;
 
-			return read_64(delegated | injected, SIE_READ_MASK);
+			return read_64(delegated | injected, SIE_MASK);
 		}
 
 		void sie_routed_write_64(uint64_t write_mask, uint64_t value) {
 			auto [delegated, injected] = clint.s_route_masks();
 
-			write_64(reg, write_mask & SIE_WRITE_MASK & delegated, value);
-			write_64(clint.mvirt.shadow_enables, write_mask & SIE_WRITE_MASK & injected, value);
+			write_64(reg, write_mask & SIE_MASK & delegated, value);
+			write_64(clint.mvirt.shadow_enables, write_mask & SIE_MASK & injected, value);
 		}
 
 		void checked_write_sie(uint32_t val) {
@@ -895,15 +884,15 @@ struct csrs_clint_pend {
 		uint64_t vsie_routed_read_64(void) {
 			auto [delegated, injected] = clint.vs_route_masks();
 
-			uint64_t sie = ~MIx_LEVELED_MASK & sie_routed_read_64();
-			uint64_t hie = MIx_LEVELED_MASK & checked_read_hie();
+			uint64_t sie = ~MIx_LEVELED_ALL_MASK & sie_routed_read_64();
+			uint64_t hie = MIx_LEVELED_ALL_MASK & checked_read_hie();
 
 			// Alias of sie[n] / hie[n]
 			delegated = delegated & (sie | hie);
 			// shadow enable
 			injected = injected & clint.hvirt.shadow_enables;
 
-			return read_64(delegated | injected, VSIE_READ_MASK);
+			return read_64(delegated | injected, VSIE_MASK);
 		}
 
 		template <uint64_t write_mask>
@@ -912,11 +901,11 @@ struct csrs_clint_pend {
 
 			auto [delegated, injected] = clint.vs_route_masks();
 
-			uint64_t delegated_mask = write_mask & VSIE_WRITE_MASK & delegated;
+			uint64_t delegated_mask = write_mask & VSIE_MASK & delegated;
 
 			sie_routed_write_64(delegated_mask, value);
 			hie_routed_write_32(delegated_mask, value);
-			write_64(clint.hvirt.shadow_enables, write_mask & VSIE_WRITE_MASK & injected, value);
+			write_64(clint.hvirt.shadow_enables, write_mask & VSIE_MASK & injected, value);
 		}
 
 		void checked_write_vsie(uint32_t val) {
@@ -929,11 +918,11 @@ struct csrs_clint_pend {
 
 		/* low 32 bit registers xie */
 		void checked_write_mie(uint32_t val) {
-			write_lo(reg, MIE_WRITE_MASK, val);
+			write_lo(reg, MIE_MASK, val);
 		}
 
 		void hie_routed_write_32(uint64_t write_mask, uint32_t val) {
-			write_lo(reg, write_mask & HIE_WRITE_MASK, val);
+			write_lo(reg, write_mask & HIE_MASK, val);
 		}
 
 		void checked_write_hie(uint32_t val) {
@@ -941,7 +930,7 @@ struct csrs_clint_pend {
 		}
 
 		uint32_t checked_read_mie(void) {
-			return read_lo(reg, MIE_READ_MASK);
+			return read_lo(reg, MIE_MASK);
 		}
 
 		uint32_t checked_read_sie(void) {
@@ -949,7 +938,8 @@ struct csrs_clint_pend {
 		}
 
 		uint32_t checked_read_hie(void) {
-			return read_lo(reg, HIE_READ_MASK);
+			// NOTE: all HIE interrupts are always delegeated to HS, so we don't check delegation here
+			return read_lo(reg, HIE_MASK);
 		}
 
 		uint32_t checked_read_vsie(void) {
@@ -958,11 +948,11 @@ struct csrs_clint_pend {
 
 		/* high 32 bit registers xie */
 		void checked_write_mieh(uint32_t val) {
-			write_hi(reg, MIE_WRITE_MASK, val);
+			write_hi(reg, MIE_MASK, val);
 		}
 
 		uint32_t checked_read_mieh(void) {
-			return read_hi(reg, MIE_READ_MASK);
+			return read_hi(reg, MIE_MASK);
 		}
 
 		uint32_t checked_read_sieh(void) {
@@ -973,19 +963,12 @@ struct csrs_clint_pend {
 			return reg_to_hi(m_to_vs_bits(vsie_routed_read_64()));
 		}
 
-		// xie
-		static constexpr uint64_t MIE_WRITE_MASK = MIx_NON_LEVELED_MASK | MIE_MASK;
-		static constexpr uint64_t MIE_READ_MASK = MIx_NON_LEVELED_MASK | MIE_MASK;
-
-		static constexpr uint64_t SIE_WRITE_MASK = MIx_NON_LEVELED_MASK | SIE_MASK;
-		static constexpr uint64_t SIE_READ_MASK = MIx_NON_LEVELED_MASK | SIE_MASK;
-
-		static constexpr uint64_t HIE_WRITE_MASK = HIE_MASK;
-		static constexpr uint64_t HIE_READ_MASK = HIE_MASK;
-
-		static constexpr uint64_t VSIE_WRITE_MASK = MIx_NON_LEVELED_MASK | VSIE_MASK;
-		static constexpr uint64_t VSIE_READ_MASK = MIx_NON_LEVELED_MASK | VSIE_MASK;
-
+		// enable registers have may only have RW bits (read mask == write mask), so we use
+		// only one mask per register
+		static constexpr uint64_t MIE_MASK = MIx_IRQ_M_MASK;
+		static constexpr uint64_t SIE_MASK = MIx_IRQ_S_MASK;
+		static constexpr uint64_t HIE_MASK = MIx_IRQ_H_MASK;
+		static constexpr uint64_t VSIE_MASK = MIx_IRQ_VS_MASK;
 
 
 		static constexpr unsigned MIE_ADDR = 0x304;
@@ -999,33 +982,9 @@ struct csrs_clint_pend {
 
 	struct xip : public csr64_bit_ops {
 		csrs_clint_pend & clint;
+		uint64_t reg = 0;
 
 		xip(struct csrs_clint_pend & clint) : clint(clint) {}
-
-		union {
-			uint64_t reg = 0;
-			struct {
-				unsigned wpri0 : 1;
-				unsigned ssip : 1;
-				unsigned vssip : 1;
-				unsigned msip : 1;
-
-				unsigned wpri1 : 1;
-				unsigned stip : 1;
-				unsigned vstip : 1;
-				unsigned mtip : 1;
-
-				unsigned wpri2 : 1;
-				unsigned seip : 1;
-				unsigned vseip : 1;
-				unsigned meip : 1;
-
-				unsigned sgeip : 1;
-
-				unsigned wiri4 : 19;
-				unsigned wiri5 : 32;
-			} fields;
-		};
 
 		uint64_t mip_routed_read_64(void) {
 			// all bits except HVIP_OR_MASK are just HW pending bits
@@ -1049,8 +1008,8 @@ struct csrs_clint_pend {
 		void sip_routed_write_64(uint64_t write_mask, uint64_t value) {
 			auto [delegated, injected] = clint.s_route_masks();
 
-			write_64(reg, write_mask & SIP_WRITE_DELEGATED_MASK & delegated, value);
-			write_64(clint.mvirt.mvip, write_mask & SIP_WRITE_INJECTED_MASK & injected, value);
+			mip_routed_write_64(write_mask & SIP_WRITE_MASK & delegated, value);
+			write_64(clint.mvirt.mvip, write_mask & SIP_WRITE_MASK & injected, value);
 		}
 
 		void checked_write_sip(uint32_t val) {
@@ -1065,8 +1024,8 @@ struct csrs_clint_pend {
 			// NOTE: lowest bits (HVIP_OR_MASK) are handled in mip read itself
 			auto [delegated, injected] = clint.vs_route_masks();
 
-			uint64_t sip = ~MIx_LEVELED_MASK & sip_routed_read_64();
-			uint64_t hip = MIx_LEVELED_MASK & checked_read_hip();
+			uint64_t sip = ~MIx_LEVELED_ALL_MASK & sip_routed_read_64();
+			uint64_t hip = MIx_LEVELED_ALL_MASK & checked_read_hip();
 
 			// Alias of sip[n] / hip[n]
 			delegated = delegated & (sip | hip);
@@ -1082,11 +1041,11 @@ struct csrs_clint_pend {
 
 			auto [delegated, injected] = clint.vs_route_masks();
 
-			uint64_t delegated_mask = write_mask & VSIP_WRITE_DELEGATED_MASK & delegated;
+			uint64_t delegated_mask = write_mask & VSIP_WRITE_MASK & delegated;
 
 			sip_routed_write_64(delegated_mask, value);
 			hip_routed_write_32(delegated_mask, value);
-			write_64(clint.hvirt.hvip, write_mask & VSIP_WRITE_INJECTED_MASK & injected, value);
+			write_64(clint.hvirt.hvip, write_mask & VSIP_WRITE_MASK & injected, value);
 		}
 
 		void checked_write_vsip(uint32_t val) {
@@ -1097,13 +1056,23 @@ struct csrs_clint_pend {
 			vsip_routed_write_64<WRITE_HI_MASK>(hi_to_reg(val));
 		}
 
+		// bits have same writability in mip and in sip/hip/vsip (if delegated)
+		// TODO: is it so?
+		void mip_routed_write_64(uint64_t write_mask, uint64_t value) {
+			uint64_t mip_write_mask = write_mask & MIP_WRITE_MASK & ~BIT(EXC_VS_SOFTWARE_INTERRUPT);
+			write_64(reg, mip_write_mask, value);
+
+			uint64_t hvip_write_mask = write_mask & MIP_WRITE_MASK & BIT(EXC_VS_SOFTWARE_INTERRUPT);
+			write_64(clint.hvirt.hvip, hvip_write_mask, value);
+		}
+
 		/* low 32 bit registers xip */
 		void checked_write_mip(uint32_t val) {
-			write_lo(reg, MIP_WRITE_MASK, val);
+			mip_routed_write_64(WRITE_LO_MASK, lo_to_reg(val));
 		}
 
 		void hip_routed_write_32(uint64_t write_mask, uint32_t val) {
-			write_lo(reg, write_mask & HIP_WRITE_MASK, val);
+			mip_routed_write_64(write_mask & HIP_WRITE_MASK & WRITE_LO_MASK, lo_to_reg(val));
 		}
 
 		void checked_write_hip(uint32_t val) {
@@ -1119,7 +1088,7 @@ struct csrs_clint_pend {
 		}
 
 		uint32_t checked_read_hip(void) {
-			// hip bits are always just aliases of mip
+			// hip bits are always just aliases of mip, as they are always delegated
 			return reg_to_lo(mip_routed_read_64() & HIP_READ_MASK);
 		}
 
@@ -1129,7 +1098,7 @@ struct csrs_clint_pend {
 
 		/* high 32 bit registers xip */
 		void checked_write_miph(uint32_t val) {
-			write_hi(reg, MIP_WRITE_MASK, val);
+			mip_routed_write_64(WRITE_HI_MASK, hi_to_reg(val));
 		}
 
 		uint32_t checked_read_miph(void) {
@@ -1146,7 +1115,7 @@ struct csrs_clint_pend {
 
 		bool hw_write_mip(uint32_t iid, bool set) {
 			uint64_t reg_before = reg;
-			write_64(reg, MIP_READ_MASK & BIT(iid), set << iid);
+			write_64(reg, MIx_IRQ_M_MASK & BIT(iid), set << iid);
 			uint64_t reg_after = reg;
 
 			// edge if bit go from 0 to 1
@@ -1155,22 +1124,19 @@ struct csrs_clint_pend {
 			return edge;
 		}
 
-		// xip
-		static constexpr uint64_t MIP_WRITE_MASK = 0;
-		static constexpr uint64_t MIP_READ_MASK = MIE_MASK;
+		static constexpr uint64_t MIP_WRITE_MASK = MIx_IRQ_M_MASK & MIx_IRQ_TYPE_EDGE_MASK;
+		static constexpr uint64_t MIP_READ_MASK = MIx_IRQ_M_MASK;
 
-		// TODO: even if delegated MIx_IRQ_TYPE_EDGE_MASK should be writable bits
-		static constexpr uint64_t SIP_WRITE_DELEGATED_MASK = 0;
-		static constexpr uint64_t SIP_WRITE_INJECTED_MASK = (MIx_NON_LEVELED_MASK | SIE_MASK) & MIx_IRQ_TYPE_EDGE_MASK;
-		static constexpr uint64_t SIP_READ_MASK = MIx_NON_LEVELED_MASK | SIE_MASK;
+		// sip has same writability no matter if irq is delegated or injected
+		static constexpr uint64_t SIP_WRITE_MASK = MIx_IRQ_S_MASK & MIx_IRQ_TYPE_EDGE_MASK;
+		static constexpr uint64_t SIP_READ_MASK = MIx_IRQ_S_MASK;
 
-		static constexpr uint64_t HIP_WRITE_MASK = 0;
-		static constexpr uint64_t HIP_READ_MASK = HIE_MASK;
+		static constexpr uint64_t HIP_WRITE_MASK = MIx_IRQ_H_MASK & MIx_IRQ_TYPE_EDGE_MASK;
+		static constexpr uint64_t HIP_READ_MASK = MIx_IRQ_H_MASK;
 
-		// TODO: even if delegated MIx_IRQ_TYPE_EDGE_MASK should be writable bits
-		static constexpr uint64_t VSIP_WRITE_DELEGATED_MASK = 0;
-		static constexpr uint64_t VSIP_WRITE_INJECTED_MASK = (MIx_NON_LEVELED_MASK | VSIE_MASK) & MIx_IRQ_TYPE_EDGE_MASK;
-		static constexpr uint64_t VSIP_READ_MASK = MIx_NON_LEVELED_MASK | VSIE_MASK;
+		// vsip has same writability no matter if irq is delegated or injected
+		static constexpr uint64_t VSIP_WRITE_MASK = MIx_IRQ_VS_MASK & MIx_IRQ_TYPE_EDGE_MASK;
+		static constexpr uint64_t VSIP_READ_MASK = MIx_IRQ_VS_MASK;
 
 
 		static constexpr unsigned MIP_ADDR = 0x344;
@@ -1190,7 +1156,7 @@ struct csrs_clint_pend {
 		// NOTE: mideleg doesn't affect mvien access
 		// AIA: A bit in mvien can be set to 1 only for major interrupts 1, 9, and 13–63.
 		// however, in RTIA we unify mvie & mvip behavior across bits
-		static constexpr uint64_t MVIEN_MASK = MIx_NON_LEVELED_MASK | SIE_MASK;
+		static constexpr uint64_t MVIEN_MASK = MIx_IRQ_S_MASK;
 		static constexpr uint64_t MVIP_MASK = MVIEN_MASK;
 
 		// addrs
@@ -1246,11 +1212,11 @@ struct csrs_clint_pend {
 		// Specifically, bits 10, 6, and 2 of hvip are writable bits that correspond
 		// to VS-level external interrupts (VSEIP), VS-level timer interrupts (VSTIP),
 		// and VS-level software interrupts (VSSIP), respectively.
-		static constexpr uint64_t HVIEN_MASK = MIx_NON_LEVELED_MASK;
-		static constexpr uint64_t HVIP_MASK = MIx_NON_LEVELED_MASK | MIx_VS_MASK;
-
+		static_assert((MIx_NON_LEVELED_S_VS_MASK | MIx_LEVELED_VS_MASK) == MIx_IRQ_VS_MASK);
+		static constexpr uint64_t HVIEN_MASK = MIx_NON_LEVELED_S_VS_MASK;
+		static constexpr uint64_t HVIP_MASK = MIx_IRQ_VS_MASK;
 		// legacy hvip bits from priveledged ISA
-		static constexpr uint64_t HVIP_OR_MASK = VSIE_MASK;
+		static constexpr uint64_t HVIP_OR_MASK = MIx_LEVELED_VS_MASK;
 
 		// addrs
 		static constexpr unsigned HVIP_ADDR = 0x645;
@@ -1270,6 +1236,10 @@ struct csrs_clint_pend {
 
 		void checked_write_hvip(uint32_t val) {
 			write_lo(hvip, HVIP_MASK, val);
+
+			// NOTE: special case of VS SW irq pending RW aliasing between HIP <-> HVIP <-> MIP
+			// is handled in mip_routed_write_64() and mip_routed_read_64(), so
+			// we don't need to write to mip here
 		}
 
 		uint32_t checked_read_hvip(void) {
@@ -1295,7 +1265,7 @@ struct csrs_clint_pend {
 	} hvirt;
 
 	struct csr_mideleg : public csr64_bit_ops {
-		uint64_t checked_read_mideleg_64(void) {
+		uint64_t mideleg_routed_read_64(void) {
 			return read_64(reg, MIDELEG_READ_MASK);
 		}
 
@@ -1327,11 +1297,11 @@ struct csrs_clint_pend {
 		// and guest external interrupts are always delegated past M-mode to HS-mode.
 		static_assert(iss_config::MAX_GUEST != 0);
 
-		uint64_t reg = HIE_MASK;
+		uint64_t reg = MIx_LEVELED_H_MASK;
 
 		// TODO: COUNTER_OVREFLOW_INTERRUPT - it should be delegatable?
-		static constexpr uint64_t MIDELEG_READ_MASK = SIE_MASK | HIE_MASK;
-		static constexpr uint64_t MIDELEG_WRITE_MASK = SIE_MASK;
+		static constexpr uint64_t MIDELEG_WRITE_MASK = MIx_LEVELED_S_MASK;
+		static constexpr uint64_t MIDELEG_READ_MASK = MIx_LEVELED_S_MASK | MIx_LEVELED_H_MASK;
 	} mideleg;
 
 	struct csr_hideleg : public csr64_bit_ops {
@@ -1340,7 +1310,7 @@ struct csrs_clint_pend {
 
 		csr_hideleg(struct csrs_clint_pend & clint) : clint(clint) {}
 
-		uint64_t checked_read_hideleg_64(void) const {
+		uint64_t hideleg_routed_read_64(void) const {
 			return read_64(reg, HIDELEG_MASK & hideleg_m_extra_mask());
 		}
 
@@ -1350,6 +1320,7 @@ struct csrs_clint_pend {
 
 		// TODO: what if we write 1 to some bit, masked it and unmasked it afterwards?
 		// Should it be 0 or 1?
+		// It is UNSPECIFIED in the spec
 		uint32_t checked_read_hideleg(void) {
 			return read_lo(reg, HIDELEG_MASK & hideleg_m_extra_mask());
 		}
@@ -1377,10 +1348,7 @@ struct csrs_clint_pend {
 		// Among bits 15:0 of hideleg, bits 10, 6, and 2
 		// (corresponding to the standard VS-level interrupts) are writable
 		// TODO: counter overflow
-		static constexpr uint64_t HIDELEG_MASK = MIx_VS_MASK;
-
-		// legacy masks
-		static_assert(HIDELEG_MASK == 0b10001000100);
+		static constexpr uint64_t HIDELEG_MASK = MIx_LEVELED_VS_MASK;
 	} hideleg = csr_hideleg(*this);
 
 	bool is_iid_injected(PrivilegeLevel level, uint32_t iid) {
@@ -1416,7 +1384,7 @@ struct csrs_clint_pend {
 	}
 
 	inline std::tuple<uint64_t, uint64_t> vs_route_masks(void) const {
-		uint64_t delegated_mask = hideleg.checked_read_hideleg_64();
+		uint64_t delegated_mask = hideleg.hideleg_routed_read_64();
 		uint64_t injected_mask = ~delegated_mask & hvirt.hvien;
 		// NOTE: bits 0-12 are delegated and injected simultaneously
 		// (due to different injection mechanism). They are not set in
@@ -1441,19 +1409,19 @@ struct csrs_clint_pend {
 	}
 
 	static uint64_t m_to_vs_bits(uint64_t mix) {
-		uint64_t mix_vs = mix & MIx_VS_MASK;
+		uint64_t mix_vs = mix & MIx_LEVELED_VS_MASK;
 		mix_vs >>= MIP_TO_VSIP_SHIFT;
 
-		uint64_t mix_unleveled = mix & ~MIx_LEVELED_MASK;
+		uint64_t mix_unleveled = mix & ~MIx_LEVELED_ALL_MASK;
 
 		return mix_unleveled | mix_vs;
 	}
 
 	static uint64_t vs_to_m_bits(uint64_t vsix) {
-		uint64_t vsix_vs = vsix & VSIx_VS_MASK;
+		uint64_t vsix_vs = vsix & VSIx_LEVELED_VS_MASK;
 		vsix_vs <<= MIP_TO_VSIP_SHIFT;
 
-		uint64_t vsix_unleveled = vsix & ~MIx_LEVELED_MASK;
+		uint64_t vsix_unleveled = vsix & ~MIx_LEVELED_ALL_MASK;
 
 		return vsix_unleveled | vsix_vs;
 	}
@@ -1801,6 +1769,10 @@ struct csr_xenvcfgh : public csr_if {
 			mask = xENVCFGH_MASK_WO_STSE;
 			fields.stce = 0;
 		}
+	}
+
+	bool is_timer_enabled(void) {
+		return fields.stce;
 	}
 
 private:
@@ -2157,7 +2129,6 @@ struct vs_iprio_banks {
 			iprio[i].mark_present_in_hw(EXC_DEBUG_TRACE_INTERRUPT);
 			iprio[i].mark_present_in_hw(EXC_LOW_PRIO_RAS_INTERRUPT);
 			iprio[i].mark_present_in_hw(EXC_HIGH_PRIO_RAS_INTERRUPT);
-			iprio[i].mark_present_in_hw(EXC_WDT_INTERRUPT);
 		}
 	}
 
@@ -2317,7 +2288,7 @@ struct csr_table {
 	csr_mstatush mstatush;
 	csr_misa misa;
 	csr_32 medeleg;
-	csr_mtvec mtvec;
+	csr_mtvec mtvec = csr_mtvec(true);
 	csr_mcounteren mcounteren;
 	csr_mcountinhibit mcountinhibit;
 
@@ -2358,7 +2329,7 @@ struct csr_table {
 
 	// supervisor csrs (please note: some are already covered by the machine mode csrs, i.e. sstatus, sie and sip, and
 	// some are required but have the same fields, hence the machine mode classes are used)
-	csr_mtvec stvec;
+	csr_mtvec stvec = csr_mtvec(false);
 	csr_mcounteren scounteren;
 	csr_32 sscratch;
 	csr_mepc sepc;
@@ -2380,6 +2351,7 @@ struct csr_table {
 	csr_topei stopei;
 
 	// H-extended supervisor csrs
+	csr_mcounteren hcounteren;
 	csr_hstatus hstatus;
 	csr_32 hcontext;
 	csr_32 hedeleg;
@@ -2397,7 +2369,7 @@ struct csr_table {
 	csr_xenvcfgh henvcfgh = csr_xenvcfgh(false);
 
 	// VS csrs
-	csr_mtvec vstvec;
+	csr_mtvec vstvec = csr_mtvec(false);
 	csr_mepc vsepc;
 	csr_mcause vscause;
 	csr_32 vstval;
@@ -2500,6 +2472,7 @@ struct csr_table {
 		register_mapping[STOPI_ADDR] = &stopi.reg;
 		register_mapping[STOPEI_ADDR] = &stopei.reg;
 
+		register_mapping[HCOUNTEREN_ADDR] = &hcounteren.reg;
 		register_mapping[HSTATUS_ADDR] = &hstatus.reg;
 		register_mapping[HEDELEG_ADDR] = &hedeleg.reg;
 		register_mapping[HCONTEXT_ADDR] = &hcontext.reg;
@@ -2757,6 +2730,10 @@ constexpr unsigned icsr_addr_hmpuaddr31 = 0x1BE;
 constexpr unsigned icsr_addr_hmpuconf31 = 0x1BF;
 }
 
+static constexpr bool is_irq_icsr(unsigned addr) {
+	return ((addr >= 0x30 && addr <= 0x3F) || (addr >= 0x70 && addr <= 0xFF));
+}
+
 // risc-v inderect CSR access extension(Smcsrind)
 struct icsr_ms_table {
 	std::unordered_map<unsigned, icsr_if *> register_mapping_icsr;
@@ -2827,7 +2804,6 @@ struct icsr_ms_table {
 			iprio.mark_present_in_hw(EXC_DEBUG_TRACE_INTERRUPT);
 			iprio.mark_present_in_hw(EXC_LOW_PRIO_RAS_INTERRUPT);
 			iprio.mark_present_in_hw(EXC_HIGH_PRIO_RAS_INTERRUPT);
-			iprio.mark_present_in_hw(EXC_WDT_INTERRUPT);
 		}
 
 		register_mapping_icsr[icsr_addr_eidelivery] = &eidelivery;

@@ -248,6 +248,7 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	void on_xtvec_write(PrivilegeLevel level);
 	void on_clint_csr_write(uint32_t addr, uint32_t value);
 	void notify_irq_taken(PrivilegeLevel target_mode);
+	void sync_xtvec_nv_presence(void);
 
 	void update_interrupt_mode(PrivilegeLevel level);
 
@@ -265,6 +266,7 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	void imsic_update_eip_bit(icsr_32 *eip, uint32_t value, bool set_bit);
 
 	uint8_t get_iprio(PrivilegeLevel level, uint32_t iid);
+	uint8_t get_iprio_mfmt(PrivilegeLevel level, uint32_t iid);
 	struct irq_cprio get_external_cprio(PrivilegeLevel level);
 	struct irq_cprio get_external_cprio_generic(PrivilegeLevel level);
 	struct irq_cprio get_external_cprio_256(PrivilegeLevel level);
@@ -296,7 +298,8 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	void recalc_xtopi(PendingInterrupts &irqs_pend);
 	PrivilegeLevel compute_pending_interrupt(PendingInterrupts &irqs_pend);
 	struct PendingInterrupts process_clint_pending_irq_bits_per_level(PendingInterrupts & pendings);
-	struct PendingInterrupts compute_clint_pending_irq_bits_per_level(void);
+	struct PendingInterrupts compute_clint_pending_irq_bits_per_level_mfmt(void);
+	struct PendingInterrupts compute_system_pending_irq_bits_per_level_lfmt(void);
 	std::tuple<PrivilegeLevel, bool> prepare_interrupt(void);
 
 	void sys_exit() override;
