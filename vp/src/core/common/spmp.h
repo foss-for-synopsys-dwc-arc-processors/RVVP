@@ -157,7 +157,7 @@ class GenericSPMP {
     bool inline is_access_allowed(struct spmpcfg cfg, MemoryAccessType type)
     {
         bool s_bit = cfg.fields.S0;
-        bool sum_bit = core.csrs.mstatus.fields.sum;
+        bool sum_bit = core.csrs.mstatus.mstatus.fields.sum;
         auto mode = core.prv;
 
         if (s_bit == 0) {

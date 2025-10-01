@@ -31,7 +31,7 @@ class GenericSMPU {
         if (mode == VirtualSupervisorMode || mode == VirtualUserMode)
             sum_bit = core.csrs.vsstatus.fields.sum;
         else
-            sum_bit = core.csrs.mstatus.fields.sum;
+            sum_bit = core.csrs.mstatus.mstatus.fields.sum;
 
         /* Special case #0 */
         if (!(attr & SMPU_R_FLAG) && (attr & SMPU_W_FLAG) && !(attr & SMPU_X_FLAG)) {
@@ -250,7 +250,7 @@ class GenericSMPU {
                         mode == VirtualSupervisorMode))
                     mxr = core.csrs.vsstatus.fields.mxr;
                 else
-                    mxr = core.csrs.mstatus.fields.mxr;
+                    mxr = core.csrs.mstatus.mstatus.fields.mxr;
 
                 if (mxr)
                     return attr & (SMPU_R_FLAG | SMPU_X_FLAG);

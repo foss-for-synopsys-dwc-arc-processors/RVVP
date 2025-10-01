@@ -137,8 +137,8 @@ struct CombinedMemoryInterface : public sc_core::sc_module,
 
 	inline PrivilegeLevel get_mem_mode(MemoryAccessType type, PrivilegeLevel privilege_override) {
 		auto mode = iss.prv;
-		if (type != FETCH && iss.csrs.mstatus.fields.mprv)
-			mode = iss.csrs.mstatus.fields.mpp;
+		if (type != FETCH && iss.csrs.mstatus.mstatus.fields.mprv)
+			mode = iss.csrs.mstatus.mstatus.fields.mpp;
 		if (privilege_override != NoneMode)
 			mode = privilege_override;
 

@@ -94,8 +94,8 @@ struct GenericMMU {
         auto mode = core.prv;
 
         if (type != FETCH) {
-            if (core.csrs.mstatus.fields.mprv)
-                mode = core.csrs.mstatus.fields.mpp;
+            if (core.csrs.mstatus.mstatus.fields.mprv)
+                mode = core.csrs.mstatus.mstatus.fields.mpp;
         }
 
         if (mode == MachineMode)
@@ -156,8 +156,8 @@ struct GenericMMU {
 
     uint64_t walk(uint64_t vaddr, MemoryAccessType type, PrivilegeLevel mode) {
         bool s_mode = mode == SupervisorMode;
-        bool sum = core.csrs.mstatus.fields.sum;
-        bool mxr = core.csrs.mstatus.fields.mxr;
+        bool sum = core.csrs.mstatus.mstatus.fields.sum;
+        bool mxr = core.csrs.mstatus.mstatus.fields.mxr;
 
         vm_info vm = decode_vm_info(mode);
 

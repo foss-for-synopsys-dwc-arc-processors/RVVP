@@ -170,6 +170,7 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	clint_if *clint = nullptr;
 	instr_memory_if *instr_mem = nullptr;
 	data_memory_if *mem = nullptr;
+	primary_interrupt_controller_if *prime_eic = nullptr;
 	syscall_emulator_if *sys = nullptr;  // optional, if provided, the iss will intercept and handle syscalls directly
 	RegFile regs;
 	FpRegs fp_regs;
@@ -300,6 +301,10 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	struct PendingInterrupts process_clint_pending_irq_bits_per_level(PendingInterrupts & pendings);
 	struct PendingInterrupts compute_clint_pending_irq_bits_per_level_mfmt(void);
 	struct PendingInterrupts compute_system_pending_irq_bits_per_level_lfmt(void);
+	std::tuple<PrivilegeLevel, uint32_t> compute_clint_interrupt(void);
+	std::tuple<PrivilegeLevel, uint32_t> compute_primary_ic_pending(void);
+	std::tuple<PrivilegeLevel, uint32_t> compute_primary_ic_interrupt(void);
+	uint32_t primary_ic_claim_pending(uint32_t claimi_addr);
 	std::tuple<PrivilegeLevel, bool> prepare_interrupt(void);
 
 	void sys_exit() override;
@@ -402,7 +407,8 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 
 	uint32_t get_xtinst(SimulationTrap &e);
 
-	PrivilegeLevel prepare_trap(SimulationTrap &e);
+	PrivilegeLevel compute_exception_level(SimulationTrap &e);
+	PrivilegeLevel prepare_exception(SimulationTrap &e);
 
 	void prepare_interrupt(const PendingInterrupts &x);
 

@@ -114,11 +114,10 @@ enum source_mode {
 #define APLIC_TARGETS_HARTIND_MASK          0x3FFF
 
 
-template <unsigned NumberCores, unsigned NumberDomains, unsigned NumberInterrupts, unsigned NumberInterruptEntries, uint32_t MaxPriority>
+template <unsigned NumberCores, unsigned NumberDomains, unsigned NumberInterrupts>
 struct APLIC : public sc_core::sc_module, public interrupt_gateway {
 	static_assert(NumberInterrupts <= 1024, "out of bound");
 	static_assert(NumberCores <= 15360, "out of bound");
-	static constexpr unsigned WORDS_FOR_INTERRUPT_ENTRIES = (NumberInterruptEntries+(32-1))/32;
 
 	tlm_utils::simple_target_socket<APLIC> tsock;
 	tlm_utils::simple_initiator_socket<APLIC> isock;

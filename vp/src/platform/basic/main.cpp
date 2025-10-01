@@ -11,7 +11,7 @@
 #if 0
 #include "fe310_plic.h"
 #else
-#include "aplic.h"
+#include "aplic-uia.h"
 #endif
 #include "flash.h"
 #include "debug_memory.h"
@@ -136,7 +136,7 @@ int sc_main(int argc, char **argv) {
 	SMPU smpu(core);
 	SimpleMemory mem("SimpleMemory", opt.mem_size);
 	SimpleTerminal term("SimpleTerminal");
-	UART uart("Generic_UART", 6);
+	UART uart("Generic_UART", 56);
 	ELFLoader loader(opt.input_program.c_str());
 	SimpleBus<4, 14> bus("SimpleBus");
 	CombinedMemoryInterface iss_mem_if("MemoryInterface", core, NULL, &spmp, &smpu);
@@ -144,16 +144,16 @@ int sc_main(int argc, char **argv) {
 #if 0
 	FE310_PLIC<1, 64, 96, 32> plic("PLIC");
 #else
-	APLIC<1, 2, 1023, 1023, 32> plic("APLIC");
+	APLIC_UIA<1, 2, 63> plic("APLIC_UIA", opt.trace_mode);
 #endif
 	CLINT<1> clint("CLINT");
-	SimpleSensor sensor("SimpleSensor", 2);
-	SimpleSensor2 sensor2("SimpleSensor2", 5);
-	BasicTimer timer("BasicTimer", 3);
+	SimpleSensor sensor("SimpleSensor", 52);
+	SimpleSensor2 sensor2("SimpleSensor2", 55);
+	BasicTimer timer("BasicTimer", 53);
 	MemoryMappedFile mram("MRAM", opt.mram_image, opt.mram_size);
-	SimpleDMA dma("SimpleDMA", 4);
+	SimpleDMA dma("SimpleDMA", 54);
 	Flashcontroller flashController("Flashcontroller", opt.flash_device);
-	EthernetDevice ethernet("EthernetDevice", 7, mem.data, opt.network_device);
+	EthernetDevice ethernet("EthernetDevice", 57, mem.data, opt.network_device);
 	Display display("Display");
 	DebugMemoryInterface dbg_if("DebugMemoryInterface");
 
@@ -248,6 +248,7 @@ int sc_main(int argc, char **argv) {
 
 	// connect interrupt signals/communication
 	plic.target_harts[0] = &core;
+	core.prime_eic = &plic;
 	clint.target_harts[0] = &core;
 	sensor.plic = &plic;
 	dma.plic = &plic;

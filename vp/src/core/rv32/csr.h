@@ -47,14 +47,6 @@ constexpr uint32_t MEDELEG_MASK = 0b1011111111111111; //TODO: is VS ecall (11 bi
 constexpr uint32_t MCOUNTEREN_MASK = 0b111;
 constexpr uint32_t MCOUNTINHIBIT_MASK = 0b101;
 
-
-// constexpr uint32_t MSTATUS_MASK = 0b10000000011111111111100110111011;
-constexpr uint32_t MSTATUS_MASK = 0b10000000011111111111111111101010;
-// constexpr uint32_t SSTATUS_MASK = 0b10000000000011011110000100110011;
-constexpr uint32_t SSTATUS_MASK = 0b10000000000011011110011101100010;
-
-constexpr uint32_t MSTATUSH_MASK = 0b00000000000000000000000011110000;
-
 constexpr uint32_t SATP_MASK = 0b10000000001111111111111111111111;
 constexpr uint32_t SATP_MODE = 0b10000000000000000000000000000000;
 
@@ -181,7 +173,6 @@ constexpr unsigned HTVAL_ADDR = 0x643;
 constexpr unsigned HTINST_ADDR = 0x64A;
 
 // 32 bit VS CSRs
-constexpr uint32_t VSSTATUS_MASK = SSTATUS_MASK;
 constexpr unsigned VSSTATUS_ADDR = 0x200;
 
 constexpr unsigned VSTVEC_ADDR = 0x205;
@@ -597,8 +588,8 @@ struct csr_mvendorid {
 	};
 };
 
-struct csr_mstatus {
-	union {
+struct csr_xstatus {
+	union mstatus_u{
 		uint32_t reg = 0;
 		struct {
 			unsigned wpri1 : 1;
@@ -620,10 +611,66 @@ struct csr_mstatus {
 			unsigned tvm : 1;
 			unsigned tw : 1;
 			unsigned tsr : 1;
-			unsigned wpri5 : 8;
+			unsigned wpri5 : 1;
+			unsigned sdt : 1;
+			unsigned wpri6 : 6;
 			unsigned sd : 1;
 		} fields;
-	};
+	} mstatus;
+
+	union mstatush_u {
+		uint32_t reg = 0;
+		struct {
+			unsigned wpri1 : 4;
+			unsigned sbe : 1;
+			unsigned mbe : 1;
+			unsigned gva : 1;
+			unsigned mpv : 1;
+			unsigned wpri2 : 2;
+			unsigned mdt : 1;
+			unsigned wpri3 : 21;
+		} fields;
+	} mstatush;
+
+	void checked_write_mstatus(uint32_t value) {
+		mstatus.reg = (mstatus.reg & ~MSTATUS_MASK) | (value & MSTATUS_MASK);
+
+		if (mstatush.fields.mdt)
+			mstatus.fields.mie = 0;
+
+		if (mstatus.fields.sdt)
+			mstatus.fields.sie = 0;
+	}
+
+	void checked_write_mstatush(uint32_t value) {
+		mstatush.reg = (mstatush.reg & ~MSTATUSH_MASK) | (value & MSTATUSH_MASK);
+
+		if (mstatush.fields.mdt)
+			mstatus.fields.mie = 0;
+	}
+
+	void checked_write_sstatus(uint32_t value) {
+		mstatus.reg = (mstatus.reg & ~SSTATUS_MASK) | (value & SSTATUS_MASK);
+
+		if (mstatus.fields.sdt)
+			mstatus.fields.sie = 0;
+	}
+
+	uint32_t checked_read_mstatus(void) {
+		return mstatus.reg & MSTATUS_MASK;
+	}
+
+	uint32_t checked_read_mstatush(void) {
+		return mstatush.reg & MSTATUSH_MASK;
+	}
+
+	uint32_t checked_read_sstatus(void) {
+		return mstatus.reg & SSTATUS_MASK;
+	}
+
+	static constexpr uint32_t MSTATUS_MASK = 0b10000001011111111111111111101010;
+	static constexpr uint32_t SSTATUS_MASK = 0b10000001000011011110011101100010;
+	static constexpr uint32_t MSTATUSH_MASK = 0b00000000000000000000010011110000;
 };
 
 struct csr_vsstatus {
@@ -650,19 +697,7 @@ struct csr_vsstatus {
 	};
 };
 
-struct csr_mstatush {
-	union {
-		uint32_t reg = 0;
-		struct {
-			unsigned wpri1 : 4;
-			unsigned sbe : 1;
-			unsigned mbe : 1;
-			unsigned gva : 1;
-			unsigned mpv : 1;
-			unsigned wpri2 : 24;
-		} fields;
-	};
-};
+constexpr uint32_t VSSTATUS_MASK = csr_xstatus::SSTATUS_MASK;
 
 struct csr_hstatus {
 	union {
@@ -1661,7 +1696,8 @@ struct csr_menvcfg : public csr_if {
 			unsigned cbcfe : 1;
 			unsigned cbze : 1;
 			unsigned mtsp : 1;
-			unsigned wpri2 : 23;
+			unsigned uia_tsp : 1;
+			unsigned wpri2 : 22;
 		} fields;
 	};
 
@@ -1689,7 +1725,8 @@ struct csr_senvcfg : public csr_if {
 			unsigned cbcfe : 1;
 			unsigned cbze : 1;
 			unsigned stsp : 1;
-			unsigned wpri2 : 23;
+			unsigned uia_tsp : 1;
+			unsigned wpri2 : 22;
 		} fields;
 	};
 
@@ -1704,7 +1741,7 @@ struct csr_senvcfg : public csr_if {
 	}
 
 private:
-	static constexpr uint32_t SENVCFG_MASK = 0b111110001;
+	static constexpr uint32_t SENVCFG_MASK = 0b1111110001;
 };
 
 struct csr_henvcfg : public csr_if {
@@ -2284,8 +2321,7 @@ struct csr_table {
 	csr_32 mimpid;
 	csr_32 mhartid;
 
-	csr_mstatus mstatus;
-	csr_mstatush mstatush;
+	csr_xstatus mstatus;
 	csr_misa misa;
 	csr_32 medeleg;
 	csr_mtvec mtvec = csr_mtvec(true);
@@ -2413,8 +2449,6 @@ struct csr_table {
 		register_mapping[MIMPID_ADDR] = &mimpid.reg;
 		register_mapping[MHARTID_ADDR] = &mhartid.reg;
 
-		register_mapping[MSTATUS_ADDR] = &mstatus.reg;
-		register_mapping[MSTATUSH_ADDR] = &mstatush.reg;
 		register_mapping[MISA_ADDR] = &misa.reg;
 		register_mapping[MEDELEG_ADDR] = &medeleg.reg;
 		register_mapping[MTVEC_ADDR] = &mtvec.reg;

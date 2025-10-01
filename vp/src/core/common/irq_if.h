@@ -63,19 +63,28 @@ struct external_interrupt_target {
 	virtual void clear_external_interrupt(PrivilegeLevel level) = 0;
 };
 
-struct clint_interrupt_target {
-	virtual ~clint_interrupt_target() {}
+struct clint_interrupt_if {
+	virtual ~clint_interrupt_if() = default;
 
 	virtual void trigger_timer_interrupt(bool status, PrivilegeLevel sw_irq_type) = 0;
+	virtual void trigger_software_interrupt(bool status, PrivilegeLevel sw_irq_type) = 0;
+};
+
+struct clint_interrupt_target : public virtual clint_interrupt_if {
 	virtual uint64_t get_xtimecmp_level_csr(PrivilegeLevel level) = 0;
 	virtual bool is_timer_compare_level_exists(PrivilegeLevel level) = 0;
-	virtual void trigger_software_interrupt(bool status, PrivilegeLevel sw_irq_type) = 0;
 };
 
 struct interrupt_gateway {
 	virtual ~interrupt_gateway() {}
 
 	virtual void gateway_trigger_interrupt(uint32_t irq_id) = 0;
+};
+
+struct primary_interrupt_controller_if : public virtual clint_interrupt_if {
+	virtual bool is_primary() = 0;
+	virtual bool is_pending(PrivilegeLevel level) = 0;
+	virtual bool is_in_irq_context(PrivilegeLevel level) = 0;
 };
 
 #endif  // RISCV_ISA_IRQ_IF_H
