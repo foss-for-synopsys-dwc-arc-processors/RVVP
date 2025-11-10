@@ -82,8 +82,7 @@ struct interrupt_gateway {
 };
 
 struct primary_interrupt_controller_if : public virtual clint_interrupt_if {
-	virtual bool is_primary() = 0;
-	virtual bool is_pending(PrivilegeLevel level) = 0;
+	virtual void set_primary(bool primary) = 0;
 	virtual bool is_in_irq_context(PrivilegeLevel level) = 0;
 };
 

@@ -59,10 +59,13 @@ struct CLINT : public clint_if, public sc_core::sc_module {
 
 	std::array<clint_interrupt_target *, NumberOfCores> target_harts{};
 
+	bool trace_mode = false;
+
 	SC_HAS_PROCESS(CLINT);
 
-	CLINT(sc_core::sc_module_name) {
+	CLINT(sc_core::sc_module_name, bool trace_mode = false) : trace_mode(trace_mode) {
 		tsock.register_b_transport(this, &CLINT::transport);
+		tsock.register_transport_dbg(this, &CLINT::transport_dbg);
 
 		regs_mtimecmp.alignment = 4;
 		regs_msip.alignment = 4;
@@ -103,12 +106,21 @@ struct CLINT : public clint_if, public sc_core::sc_module {
 
 		mtime.write(now.value() / scaler);
 
+		if (trace_mode)
+			std::cout << "[vp::clint] read mtime=" << mtime <<
+				" (0x" << std::hex << mtime << std::dec << ")" << std::endl;
+
 		return true;
 	}
 
 	void post_write_mtimecmp(RegisterRange::WriteInfo t) {
-		// std::cout << "[vp::clint] write mtimecmp[addr=" << t.addr << "]=" << mtimecmp[t.addr / 8] << ", mtime=" <<
-		// mtime << std::endl;
+		if (trace_mode) {
+			unsigned idx = (t.addr / 8);
+			uint64_t val = mtimecmp[idx];
+
+			std::cout << "[vp::clint] write mtimecmp[addr=" << t.addr << ", size=" << t.size << "], mtimecmp=" << std::hex << val
+				<< ", mtime=0x" << std::hex << (uint64_t)mtime << " mtime" << ((mtime > val) ? ">" : "<") << "mtimecmp" << std::endl;
+		}
 		irq_event.notify(t.delay);
 	}
 
@@ -133,6 +145,10 @@ struct CLINT : public clint_if, public sc_core::sc_module {
 		delay += 2 * clock_cycle;
 
 		vp::mm::route("CLINT", register_ranges, trans, delay);
+	}
+
+	unsigned transport_dbg(tlm::tlm_generic_payload &trans) {
+		return vp::mm::route_dbg("CLINT", register_ranges, trans);
 	}
 
 	void post_write_xtimecmp() override {

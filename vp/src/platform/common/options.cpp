@@ -20,6 +20,7 @@ Options::Options(void) {
 		("use-data-dmi", po::bool_switch(&use_data_dmi), "use dmi to execute load/store operations")
 		("use-dmi", po::bool_switch(), "use instr and data dmi")
 		("input-file", po::value<std::string>(&input_program)->required(), "input file to use for execution")
+		("double-trap", po::value<bool>(&use_double_trap), "use double trap extension (true/false, default: true)")
 		("spmp", po::bool_switch(&use_spmp), "use SPMP for memory protection")
 		("smpu", po::bool_switch(&use_smpu), "use SMPU for memory protection");
 	// clang-format on
@@ -72,6 +73,7 @@ void Options::printValues(std::ostream& os) const {
 	os << "tlm_global_quantum: " << tlm_global_quantum << std::endl;
 	os << "use_instr_dmi: " << use_instr_dmi << std::endl;
 	os << "use_data_dmi: " << use_data_dmi << std::endl;
+	os << "use double trap: " << use_double_trap << std::endl;
 	os << "use spmp: " << use_spmp << std::endl;
 	os << "use smpu: " << use_smpu << std::endl;
 }

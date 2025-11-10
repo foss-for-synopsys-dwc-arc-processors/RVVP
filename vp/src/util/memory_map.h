@@ -126,6 +126,35 @@ struct RegisterRange {
 			throw std::runtime_error("unsupported TLM command");
 		}
 	}
+
+	void process_dbg(tlm::tlm_generic_payload &trans) {
+		auto addr = trans.get_address();
+		auto cmd = trans.get_command();
+		auto len = trans.get_data_length();
+		auto ptr = trans.get_data_ptr();
+
+		// Validate alignment constraint
+		if ((addr % alignment != 0) || (len % alignment != 0)) {
+			trans.set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
+			return;
+		}
+
+		sc_core::sc_time delay = sc_core::SC_ZERO_TIME;
+		if (cmd == tlm::TLM_READ_COMMAND) {
+			read(addr, ptr, len, trans, delay);
+		} else if (cmd == tlm::TLM_WRITE_COMMAND) {
+			if (readonly) {
+				trans.set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
+				return;
+			}
+			write(addr, ptr, len, trans, delay);
+		} else {
+			trans.set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
+			return;
+		}
+
+		trans.set_response_status(tlm::TLM_OK_RESPONSE);
+	}
 };
 
 template <typename T>
@@ -217,6 +246,22 @@ void route(const char *name, Iter &iterable_mm, tlm::tlm_generic_payload &trans,
 	}
 
 	throw std::runtime_error(std::string(name) + " unable to route address " + std::to_string(trans.get_address()));
+}
+
+template <typename Iter>
+unsigned route_dbg(const char *name, Iter &iterable_mm, tlm::tlm_generic_payload &trans) {
+	for (auto e : iterable_mm) {
+		if (e->match(trans)) {
+			e->process_dbg(trans);
+			if (trans.get_response_status() == tlm::TLM_OK_RESPONSE) {
+				return trans.get_data_length();
+			}
+			return 0;
+		}
+	}
+
+	trans.set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
+	return 0;
 }
 
 }  // namespace mm

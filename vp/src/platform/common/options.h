@@ -20,6 +20,7 @@ public:
 	unsigned int tlm_global_quantum = 10;
 	bool use_instr_dmi = false;
 	bool use_data_dmi = false;
+	bool use_double_trap = true;
 	bool use_spmp = false;
 	bool use_smpu = false;
 

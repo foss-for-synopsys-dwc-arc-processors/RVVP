@@ -190,6 +190,7 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 	uint64_t total_num_instr = 0;
 	csr_name_mapping csr_names;
 	icsr_name_mapping icsr_names;
+	bool use_double_trap = true;
 	bool use_spmp = false;
 	bool use_smpu = false;
 
@@ -412,13 +413,10 @@ struct ISS : public external_interrupt_target, public clint_interrupt_target, pu
 
 	void prepare_interrupt(const PendingInterrupts &x);
 
-	PendingInterrupts compute_pending_interrupts();
+	bool has_local_pending_enabled_interrupts();
 
-	bool has_local_pending_enabled_interrupts() {
-		return csrs.clint.mie.reg & csrs.clint.mip.reg;
-	}
-
-	void stsp_swap_sp_on_mode_change(PrivilegeLevel base_mode, PrivilegeLevel desc_mode);
+	void horizontal_uia_sp_swap(PrivilegeLevel base_mode, bool is_trap);
+	void stsp_swap_sp_on_mode_change(PrivilegeLevel base_mode, PrivilegeLevel desc_mode, bool is_trap);
 
 	void swap_stack_pointer(uint32_t & new_sp);
 	void verify_m_trap_vector(uint32_t mtvec_base_addr);

@@ -72,8 +72,6 @@
 
 #define APLIC_ITHRESHOLD_ITRSH_SHIFT        0
 #define APLIC_ITHRESHOLD_ITRSH_MASK         0xFF
-#define APLIC_ITHRESHOLD_PTRSH_SHIFT        8
-#define APLIC_ITHRESHOLD_PTRSH_MASK         0xFF
 
 
 #define APLIC_TOPI_IDENTITY_SHIFT           16
@@ -83,7 +81,7 @@
 #define APLIC_IDELIVERY_PRIMARY_BIT         BIT(31)
 #define APLIC_IDELIVERY_LLEN_SHIFT          16
 #define APLIC_IDELIVERY_LLEN_MASK           0x7
-#define APLIC_IDELIVERY_RW_MASK             (APLIC_IDELIVERY_ENABLE_BIT | APLIC_IDELIVERY_PRIMARY_BIT | (APLIC_IDELIVERY_LLEN_MASK << APLIC_IDELIVERY_LLEN_SHIFT))
+#define APLIC_IDELIVERY_RW_MASK             (APLIC_IDELIVERY_ENABLE_BIT | (APLIC_IDELIVERY_LLEN_MASK << APLIC_IDELIVERY_LLEN_SHIFT))
 
 #define APLIC_IDC_ONLY_COMPLETE             (APLIC_IDC_BASE + 0x0010)
 #define APLIC_IDC_ONLY_CLAIM                (APLIC_IDC_BASE + 0x0014)
@@ -336,7 +334,7 @@ struct composite_prio {
         return prio != 0 && prio <= UINT8_MAX;
     }
 
-    bool is_masked_by_threshold(uint8_t threshold) const {
+    bool is_masked_by_sw_threshold(uint8_t threshold) const {
         return prio >= threshold && threshold != 0;
     }
 
@@ -414,18 +412,24 @@ struct threshold_mngr {
         }
     }
 
-    bool is_masked_by_threshold(struct composite_prio prio) const {
-        if (prio.is_masked_by_threshold(sw_threshold))
+    bool is_masked_by_thresholds(struct composite_prio prio, bool allow_non_preemptible = false) const {
+        if (prio.is_masked_by_sw_threshold(sw_threshold))
             return true;
 
-        if (primary && !can_preempt(prio))
-            return true;
+        if (!primary)
+            return false;
 
-        return false;
+        if (can_preempt(prio))
+            return false; // preemptible zone — never masked
+
+        if (allow_non_preemptible && can_be_claimed(prio))
+            return false; // non-preemptible but claimable zone — not masked for CLAIMI/TOPI
+
+        return true;
     }
 
     uint32_t to_ithreshold(void) {
-        return sw_threshold | (sw_prev_threshold << APLIC_ITHRESHOLD_PTRSH_SHIFT);
+        return sw_threshold;
     }
 
     uint32_t to_llen(void) const {
@@ -453,26 +457,22 @@ struct threshold_mngr {
         tstack_pop();
     }
 
-    void do_claim_complete(struct uia_interrupt irq) {
+    void do_complete_claim(struct uia_interrupt irq) {
         assert(irq.iid < NumberInterrupts);
-
-        bool claim = irq.iid != 0;
-
-        // SW previous threshold is updated in all modes (on claim only)
-        if (claim)
-            sw_prev_threshold = sw_threshold;
 
         // HW priority levels stack management is only in primary mode
         if (!primary)
             return;
 
-        if (claim) {
-            // claim
-            tstack_insert(prio_to_level(irq.prio));
-        } else {
-            // complete
-            tstack_pop();
-        }
+        // No pending interrupt — no operation
+        if (irq.iid == 0)
+            return;
+
+        tstack_insert(prio_to_level(irq.prio));
+
+        if (trace_mode)
+            std::cout << "[vp::aplic-uia] do_claim: CLAIM " <<
+                (can_preempt(irq.prio) ? "higher" : "this") << " irq level, " << irq << std::endl;
     }
 
     bool is_in_irq_context() const {
@@ -482,7 +482,7 @@ struct threshold_mngr {
         return tstack_curr_llen_has_entries();
     }
 
-    uint32_t tstack_get_current_level(void) const {
+    uint32_t tstack_get_top(void) const {
         for (unsigned i = 0; i < llen_to_levels(llen); i++) {
             // Start from the lowest level (highest priority)
             if (thresholds[i]) {
@@ -498,7 +498,7 @@ private:
         if (!primary)
             return false;
 
-        uint32_t current_level = tstack_get_current_level();
+        uint32_t current_level = tstack_get_top();
         uint32_t irq_level = prio_to_level(prio);
 
         if (trace_mode) {
@@ -512,6 +512,16 @@ private:
         }
 
         return irq_level < current_level;
+    }
+
+    bool can_be_claimed(struct composite_prio prio) const {
+        if (!primary)
+            return false;
+
+        uint32_t current_level = tstack_get_top();
+        uint32_t irq_level = prio_to_level(prio);
+
+        return irq_level <= current_level;
     }
 
     bool tstack_has_entries(uint32_t upper_limit) const {
@@ -571,7 +581,7 @@ private:
         return level_val;
     }
 
-    uint32_t sw_threshold = 0, sw_prev_threshold = 0;
+    uint32_t sw_threshold = 0;
     uint32_t llen = 0;
     bool primary = false;
 
@@ -708,7 +718,7 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
         return true;
     }
 
-    uia_interrupt get_top_interrupt(int domain) {
+    uia_interrupt get_top_interrupt(int domain, bool allow_non_preemptible = false) {
         if (!astate_domain_enabled[domain] || !astate_delivery_enabled[domain])
             return uia_interrupt(); // All interrupts are disabled
 
@@ -735,7 +745,7 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
 
         assert(iid != 0 && prio.is_valid());
 
-        if (astate_threshold_mngr[domain].is_masked_by_threshold(prio))
+        if (astate_threshold_mngr[domain].is_masked_by_thresholds(prio, allow_non_preemptible))
             return uia_interrupt(); // No interrupt above threshold
 
         return uia_interrupt(iid, prio);
@@ -744,7 +754,7 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
     bool pre_read_topi(RegisterRange::ReadInfo t, unsigned domain) {
         uint32_t *topi = reinterpret_cast<uint32_t *>(t.var_addr);
 
-        struct uia_interrupt irq = get_top_interrupt(domain);
+        struct uia_interrupt irq = get_top_interrupt(domain, true);
         *topi = irq.to_topi();
 
         if (trace_mode)
@@ -754,12 +764,10 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
         return true;
     }
 
-    void claim_interrupt(struct uia_interrupt irq, unsigned domain) {
+    void clear_pend_on_claim(struct uia_interrupt irq, unsigned domain) {
         if (trace_mode)
             std::cout << "[vp::aplic-uia] claimed " << irq <<
                 " (domain = " << domain << ")" << std::endl;
-
-        // TODO: do we need to do e_run.notify(clock_cycle); here?
 
         if (irq.iid < 1 || irq.iid >= NumberInterrupts)
             return;
@@ -767,20 +775,20 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
         /* Level-triggered interrupts cannot be set/cleared by software */
         if (!astate_sm[irq.iid].is_level())
             astate_ip.reset(irq.iid);
-
-        e_run.notify(clock_cycle);
     }
 
     bool pre_read_claimi(RegisterRange::ReadInfo t, unsigned domain) {
         uint32_t *claimi = reinterpret_cast<uint32_t *>(t.var_addr);
 
-        struct uia_interrupt irq = get_top_interrupt(domain);
+        struct uia_interrupt irq = get_top_interrupt(domain, true);
         *claimi = irq.to_topi();
 
-        // if (trace_mode)  std::cout << "[vp::aplic-uia] R access to domain " << domain << " claimi = 0x" << std::hex << *claimi << std::endl;
+        astate_threshold_mngr[domain].do_complete_claim(irq);
+        clear_pend_on_claim(irq, domain);
 
-        astate_threshold_mngr[domain].do_claim_complete(irq);
-        claim_interrupt(irq, domain);
+        // TODO: call for e_run.notify only if there was a change in the HW threshold stack
+        // or we've cleared pending bit
+        e_run.notify(clock_cycle);
 
         return true;
     }
@@ -792,7 +800,11 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
         *only_claim = irq.to_topi();
 
         astate_threshold_mngr[domain].do_claim(irq);
-        claim_interrupt(irq, domain);
+        clear_pend_on_claim(irq, domain);
+
+        // TODO: call for e_run.notify only if there was a change in the HW threshold stack
+        // or we've cleared pending bit
+        e_run.notify(clock_cycle);
 
         return true;
     }
@@ -805,6 +817,10 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
 
         if (trace_mode)
             std::cout << "[vp::aplic-uia] R access to only complete (domain = " << domain << ")" << std::endl;
+
+        // TODO: call for e_run.notify only if there was a change in the HW threshold stack
+        /* We've updated HW threshold - we need to notify core */
+        e_run.notify(clock_cycle);
 
         return true;
     }
@@ -820,7 +836,7 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
     bool pre_read_debug_hw_threshold(RegisterRange::ReadInfo t, unsigned domain) {
         uint32_t *debug_hw_threshold = reinterpret_cast<uint32_t *>(t.var_addr);
 
-        *debug_hw_threshold = astate_threshold_mngr[domain].tstack_get_current_level();
+        *debug_hw_threshold = astate_threshold_mngr[domain].tstack_get_top();
 
         return true;
     }
@@ -842,16 +858,7 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
 
         astate_delivery_enabled[domain] = !!(val & APLIC_IDELIVERY_ENABLE_BIT);
 
-        // TODO: FIXME: check the spec logic regarding the primary bit in S-domain
-        // Primary bit is read-write in M-domain
-        if (domain == APLIC_M_DOMAIN)
-            astate_primary = !!(val & APLIC_IDELIVERY_PRIMARY_BIT);
-        else
-            val &= ~APLIC_IDELIVERY_PRIMARY_BIT;
-
         astate_threshold_mngr[domain].llen_from_idelivery(val);
-        astate_threshold_mngr[APLIC_M_DOMAIN].set_primary(astate_primary);
-        astate_threshold_mngr[APLIC_S_DOMAIN].set_primary(astate_primary);
 
         if (trace_mode)
             std::cout << "[vp::aplic-uia] set idelivery to 0x" << std::hex << *idelivery << " (primary=" <<
@@ -1015,10 +1022,24 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
         return true;
     }
 
-    bool is_pending_in_domain(int domain) {
+    void manage_external_interrupt(int domain) {
         struct uia_interrupt irq = get_top_interrupt(domain);
 
-        return irq.iid != 0;
+        PrivilegeLevel level = (domain == APLIC_M_DOMAIN) ? MachineMode : SupervisorMode;
+
+        if (irq.iid != 0) {
+            if (trace_mode)
+                std::cout << "[vp::aplic-uia] external irq for " << PrivilegeLevelToStr(level) <<
+                    ": assert, because of " << irq << std::endl;
+
+            target_harts[HART_0_INDEX]->trigger_external_interrupt(level);
+        } else {
+            if (trace_mode)
+                std::cout << "[vp::aplic-uia] external irq for " << PrivilegeLevelToStr(level) <<
+                    ": deassert" << std::endl;
+
+            target_harts[HART_0_INDEX]->clear_external_interrupt(level);
+        }
     }
 
     // interrupt_gateway interface
@@ -1027,15 +1048,11 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
     }
 
     // primary_interrupt_controller_if interface
-    bool is_primary() override {
-        return astate_primary;
-    }
-
-    bool is_pending(PrivilegeLevel level) override {
-        if (level != MachineMode && level != SupervisorMode)
-            return false;
-
-        return is_pending_in_domain((level == MachineMode) ? APLIC_M_DOMAIN : APLIC_S_DOMAIN);
+    void set_primary(bool primary) override {
+        astate_primary = primary;
+        astate_threshold_mngr[APLIC_M_DOMAIN].set_primary(astate_primary);
+        astate_threshold_mngr[APLIC_S_DOMAIN].set_primary(astate_primary);
+        e_run.notify(clock_cycle);
     }
 
     bool is_in_irq_context(PrivilegeLevel level) override {
@@ -1072,23 +1089,8 @@ struct APLIC_UIA : public sc_core::sc_module, public interrupt_gateway, public p
         while (true) {
             sc_core::wait(e_run);
 
-            if (!astate_primary) {
-                if (is_pending_in_domain(APLIC_M_DOMAIN)) {
-                    if (trace_mode) std::cout << "[vp::aplic-uia] external irq for M-mode: assert" << std::endl;
-                    target_harts[HART_0_INDEX]->trigger_external_interrupt(MachineMode);
-                } else {
-                    if (trace_mode) std::cout << "[vp::aplic-uia] external irq for M-mode: deassert" << std::endl;
-                    target_harts[HART_0_INDEX]->clear_external_interrupt(MachineMode);
-                }
-
-                if (is_pending_in_domain(APLIC_S_DOMAIN)) {
-                    if (trace_mode) std::cout << "[vp::aplic-uia] external irq for S-mode: assert" << std::endl;
-                    target_harts[HART_0_INDEX]->trigger_external_interrupt(SupervisorMode);
-                } else {
-                    if (trace_mode) std::cout << "[vp::aplic-uia] external irq for S-mode: deassert" << std::endl;
-                    target_harts[HART_0_INDEX]->clear_external_interrupt(SupervisorMode);
-                }
-            }
+            manage_external_interrupt(APLIC_M_DOMAIN);
+            manage_external_interrupt(APLIC_S_DOMAIN);
         }
     }
 };

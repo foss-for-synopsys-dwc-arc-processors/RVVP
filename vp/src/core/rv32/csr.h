@@ -613,7 +613,11 @@ struct csr_xstatus {
 			unsigned tsr : 1;
 			unsigned wpri5 : 1;
 			unsigned sdt : 1;
-			unsigned wpri6 : 6;
+			unsigned wpri6 : 2;
+			unsigned spush : 1;
+			unsigned sppush : 1;
+			unsigned mpush : 1;
+			unsigned mppush : 1;
 			unsigned sd : 1;
 		} fields;
 	} mstatus;
@@ -668,9 +672,26 @@ struct csr_xstatus {
 		return mstatus.reg & SSTATUS_MASK;
 	}
 
-	static constexpr uint32_t MSTATUS_MASK = 0b10000001011111111111111111101010;
-	static constexpr uint32_t SSTATUS_MASK = 0b10000001000011011110011101100010;
-	static constexpr uint32_t MSTATUSH_MASK = 0b00000000000000000000010011110000;
+	static constexpr uint32_t SSTATUS_MASK_BASE = 0b11111001000011011110011101100010;
+
+	uint32_t MSTATUS_MASK = 0b11111001011111111111111111101010;
+	uint32_t SSTATUS_MASK = SSTATUS_MASK_BASE;
+	uint32_t MSTATUSH_MASK = 0b00000000000000000000010011110000;
+
+	static constexpr uint32_t SDT_BIT = BIT(24);
+	static constexpr uint32_t MDT_BIT = BIT(10);
+
+	void configure_double_trap(bool enable) {
+		if (enable) {
+			MSTATUS_MASK |= SDT_BIT;
+			SSTATUS_MASK |= SDT_BIT;
+			MSTATUSH_MASK |= MDT_BIT;
+		} else {
+			MSTATUS_MASK &= ~SDT_BIT;
+			SSTATUS_MASK &= ~SDT_BIT;
+			MSTATUSH_MASK &= ~MDT_BIT;
+		}
+	}
 };
 
 struct csr_vsstatus {
@@ -697,7 +718,7 @@ struct csr_vsstatus {
 	};
 };
 
-constexpr uint32_t VSSTATUS_MASK = csr_xstatus::SSTATUS_MASK;
+constexpr uint32_t VSSTATUS_MASK = csr_xstatus::SSTATUS_MASK_BASE;
 
 struct csr_hstatus {
 	union {
@@ -749,8 +770,8 @@ private:
 };
 
 struct csr_mtvec {
-	csr_mtvec(bool nested_vectored_present) {
-		mark_nested_vectored_present(nested_vectored_present);
+	csr_mtvec(bool nested_modes_present) {
+		mark_nested_modes_present(nested_modes_present);
 	}
 
 	union {
@@ -765,17 +786,22 @@ struct csr_mtvec {
 		return fields.base << 2;
 	}
 
-	enum Mode { Direct = 0, Vectored = 1, SnpsNestedVectored = 3 };
+	enum Mode { Direct = 0, Vectored = 1, NestedDirect = 2, NestedVectored = 3, SnpsNestedVectored = 4 };
 
 	void checked_write(uint32_t val) {
-		reg = val & XTVEC_MASK;
-
-		// As per doc: setting bit#1 enforces setting bit#0
-		if (fields.mode != Direct && fields.mode != Vectored && fields.mode != SnpsNestedVectored)
-			fields.mode = SnpsNestedVectored;
+		reg = (reg & ~XTVEC_MASK) | (val & XTVEC_MASK);
 	}
 
-	void mark_nested_vectored_present(bool present) {
+	void force_nested_modes(const csr_mtvec &other) {
+		reg = (reg & ~MODE_BIT1) | (other.reg & MODE_BIT1);
+	}
+
+	bool is_nested_modes() const {
+		return fields.mode == NestedDirect || fields.mode == NestedVectored;
+	}
+
+private:
+	void mark_nested_modes_present(bool present) {
 		if (present) {
 			XTVEC_MASK = UINT32_MAX;
 		} else {
@@ -783,9 +809,9 @@ struct csr_mtvec {
 			reg &= XTVEC_MASK;
 		}
 	}
-private:
+
 	static constexpr uint32_t MODE_BIT1 = 0b10;
-	// Bit #1 writability (SnpsNestedVectored presence) depends on runtime state
+	// Bit #1 writability (NestedDirect / NestedVectored presence) depends on runtime state
 	uint32_t XTVEC_MASK = UINT32_MAX & ~(MODE_BIT1);
 };
 
@@ -1696,8 +1722,7 @@ struct csr_menvcfg : public csr_if {
 			unsigned cbcfe : 1;
 			unsigned cbze : 1;
 			unsigned mtsp : 1;
-			unsigned uia_tsp : 1;
-			unsigned wpri2 : 22;
+			unsigned wpri2 : 23;
 		} fields;
 	};
 
@@ -1725,8 +1750,7 @@ struct csr_senvcfg : public csr_if {
 			unsigned cbcfe : 1;
 			unsigned cbze : 1;
 			unsigned stsp : 1;
-			unsigned uia_tsp : 1;
-			unsigned wpri2 : 22;
+			unsigned wpri2 : 23;
 		} fields;
 	};
 

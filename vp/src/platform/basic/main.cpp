@@ -146,7 +146,7 @@ int sc_main(int argc, char **argv) {
 #else
 	APLIC_UIA<1, 2, 63> plic("APLIC_UIA", opt.trace_mode);
 #endif
-	CLINT<1> clint("CLINT");
+	CLINT<1> clint("CLINT", opt.trace_mode);
 	SimpleSensor sensor("SimpleSensor", 52);
 	SimpleSensor2 sensor2("SimpleSensor2", 55);
 	BasicTimer timer("BasicTimer", 53);
@@ -187,6 +187,10 @@ int sc_main(int argc, char **argv) {
 	 * mainly used together with the syscall handler, this helps for certain floats.
 	 * https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc
 	 */
+	core.use_spmp = opt.use_spmp;
+	core.use_smpu = opt.use_smpu;
+	core.use_double_trap = opt.use_double_trap;
+
 	core.init(instr_mem_if, data_mem_if, &clint, entry_point, rv64_align_address(opt.mem_end_addr));
 	sys.init(mem.data, opt.mem_start_addr, loader.get_heap_addr());
 	sys.register_core(&core);
@@ -194,9 +198,6 @@ int sc_main(int argc, char **argv) {
 	if (opt.intercept_syscalls)
 		core.sys = &sys;
 	core.error_on_zero_traphandler = opt.error_on_zero_traphandler;
-
-	core.use_spmp = opt.use_spmp;
-	core.use_smpu = opt.use_smpu;
 
 	// address mapping
 	{

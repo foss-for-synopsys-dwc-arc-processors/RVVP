@@ -1150,7 +1150,6 @@ void ISS::exec_step() {
 			if (u_mode() && csrs.misa.has_supervisor_mode_extension())
 				raise_trap(EXC_ILLEGAL_INSTR, instr.data());
 
-			// TODO: has_local_pending_enabled_interrupts require injection modification
 			if (!ignore_wfi && !has_local_pending_enabled_interrupts())
 				sc_core::wait(wfi_event);
 			break;
@@ -2245,20 +2244,15 @@ void ISS::update_interrupt_mode(PrivilegeLevel level) {
 }
 
 void ISS::sync_xtvec_nv_presence(void) {
-	// S-mode
-	bool s_nv_present = csrs.clint.mideleg.mideleg_routed_read_64() & BIT(EXC_S_EXTERNAL_INTERRUPT);
-	csrs.stvec.mark_nested_vectored_present(s_nv_present);
-
-	// VS-mode
-	bool vs_nv_present = (csrs.clint.mideleg.mideleg_routed_read_64() & BIT(EXC_VS_EXTERNAL_INTERRUPT)) &&
-						 (csrs.clint.hideleg.hideleg_routed_read_64() & BIT(EXC_VS_EXTERNAL_INTERRUPT)) &&
-						 csrs.hvictl.is_ipriom_full_mode() &&
-						 csrs.hstatus.is_imsic_connected();
-	csrs.vstvec.mark_nested_vectored_present(vs_nv_present);
 }
 
 void ISS::on_xtvec_write(PrivilegeLevel level) {
-	update_interrupt_mode(level);
+	if (level == MachineMode) {
+		// Nested modes are enabled by mtvec.mode[1] for both M and S modes.
+		// stvec.MODE[1] is a read-only alias of mtvec.MODE[1]
+		csrs.stvec.force_nested_modes(csrs.mtvec);
+		prime_eic->set_primary(csrs.mtvec.is_nested_modes());
+	}
 }
 
 void ISS::on_xenvcfgh_write(void) {
@@ -2294,6 +2288,7 @@ void ISS::init(instr_memory_if *instr_mem, data_memory_if *data_mem, clint_if *c
 	regs[RegFile::sp] = sp;
 	pc = entrypoint;
 
+	csrs.mstatus.configure_double_trap(use_double_trap);
 	iprio_icsr_access_adjust();
 }
 
@@ -2451,37 +2446,39 @@ void ISS::return_from_trap_handler(PrivilegeLevel return_mode) {
 			throw std::runtime_error("unknown privilege level " + std::to_string(return_mode));
 	}
 
-	// handle double trap bits.
-	// Handling depends on the mode we are returning from (from) and
-	// the mode we are returning to (prv)
-	switch (from) {
-		case MachineMode:
-			// NOTE: both mret & sret in M-mode clears MDT
-			csrs.mstatus.mstatush.fields.mdt = 0;
+	if (use_double_trap) {
+		// handle double trap bits.
+		// Handling depends on the mode we are returning from (from) and
+		// the mode we are returning to (prv)
+		switch (from) {
+			case MachineMode:
+				// NOTE: both mret & sret in M-mode clears MDT
+				csrs.mstatus.mstatush.fields.mdt = 0;
 
-			if (prv == UserMode || prv == VirtualSupervisorMode || prv == VirtualUserMode)
+				if (prv == UserMode || prv == VirtualSupervisorMode || prv == VirtualUserMode)
+					csrs.mstatus.mstatus.fields.sdt = 0;
+
+				// if (prv == VirtualUserMode)
+				// 	csrs.vsstatus.fields.sdt = 0;
+
+				break;
+
+			case VirtualSupervisorMode:
+				// sret in VS-mode clears SDT
+				// csrs.vsstatus.fields.sdt = 0;
+				break;
+
+			case SupervisorMode:
+				// sret in S-mode clears SDT
 				csrs.mstatus.mstatus.fields.sdt = 0;
+				break;
 
-			// if (prv == VirtualUserMode)
-			// 	csrs.vsstatus.fields.sdt = 0;
-
-			break;
-
-		case VirtualSupervisorMode:
-			// sret in VS-mode clears SDT
-			// csrs.vsstatus.fields.sdt = 0;
-			break;
-
-		case SupervisorMode:
-			// sret in S-mode clears SDT
-			csrs.mstatus.mstatus.fields.sdt = 0;
-			break;
-
-		default:
-			throw std::runtime_error("unexpected privilege level " + std::to_string(from));
+			default:
+				throw std::runtime_error("unexpected privilege level " + std::to_string(from));
+		}
 	}
 
-	stsp_swap_sp_on_mode_change(return_mode, prv);
+	stsp_swap_sp_on_mode_change(return_mode, prv, false);
 
 	if (trace)
 		printf("[vp::iss] return from trap handler, time %s, pc %8x, prv %s\n",
@@ -2498,6 +2495,8 @@ void ISS::trigger_external_interrupt(PrivilegeLevel level) {
 		csrs.clint.mip.hw_write_mip(EXC_S_EXTERNAL_INTERRUPT, true);
 	else
 		assert(false);
+
+	wfi_event.notify(sc_core::SC_ZERO_TIME);
 }
 
 void ISS::clear_external_interrupt(PrivilegeLevel level) {
@@ -2528,6 +2527,7 @@ void ISS::trigger_timer_interrupt(bool status, PrivilegeLevel timer) {
 		assert(false);
 
 	// TODO: do we need to call only on set?
+	// TODO: don't call when interrupts are routed to primary external interrupt controller
 	wfi_event.notify(sc_core::SC_ZERO_TIME);
 }
 
@@ -2563,6 +2563,7 @@ void ISS::trigger_software_interrupt(bool status, PrivilegeLevel sw_irq_type) {
 		assert(false);
 
 	// TODO: do we need to call only on set?
+	// TODO: don't call when interrupts are routed to primary external interrupt controller
 	wfi_event.notify(sc_core::SC_ZERO_TIME);
 }
 
@@ -2739,7 +2740,7 @@ std::tuple<bool, uint32_t> ISS::compute_imsic_pending(icsr_32 *eip, icsr_32 *eie
 }
 
 void ISS::on_guest_switch(void) {
-	update_interrupt_mode(VirtualSupervisorMode);
+	// update_interrupt_mode(VirtualSupervisorMode);
 	compute_imsic_pending_interrupts_vs();
 }
 
@@ -3069,8 +3070,9 @@ PrivilegeLevel ISS::prepare_exception(SimulationTrap &e) {
 	PrivilegeLevel exc_level = compute_exception_level(e);
 
 	// double trap, always into M-mode
-	if ((exc_level == MachineMode && csrs.mstatus.mstatush.fields.mdt) ||
-		(exc_level == SupervisorMode && csrs.mstatus.mstatus.fields.sdt)) {
+	if (use_double_trap &&
+		((exc_level == MachineMode && csrs.mstatus.mstatush.fields.mdt) ||
+		 (exc_level == SupervisorMode && csrs.mstatus.mstatus.fields.sdt))) {
 
 		if (trace)
 			std::cout << "[vp::iss] double trap detected, original exc: " << e.reason << " to: " << PrivilegeLevelToStr(exc_level) << std::endl;
@@ -3312,7 +3314,7 @@ void ISS::recalc_xtopi(PendingInterrupts &irqs_pend) {
 }
 
 bool ISS::is_irq_mode_snps_nested_vectored(PrivilegeLevel target_mode) {
-	return get_xtvec(target_mode).fields.mode == csr_mtvec::Mode::SnpsNestedVectored;
+	return false;
 }
 
 // called on trap caused by interrupts
@@ -3418,15 +3420,17 @@ std::tuple<PrivilegeLevel, uint32_t> ISS::compute_primary_ic_pending(void) {
 	static constexpr uint32_t UIA_M_DOMAIN_CLAIMI_ADDR = 0x40000000 + 0x4000 + 0x001C;
 	static constexpr uint32_t UIA_S_DOMAIN_CLAIMI_ADDR = UIA_M_DOMAIN_CLAIMI_ADDR + 0x10000;
 
-	if (is_irq_globaly_enable_per_level(MachineMode) && prime_eic->is_pending(MachineMode)) {
-		if (csrs.mtvec.fields.mode == csr_mtvec::Mode::Vectored)
+	// NOTE: we don't take CLINT enable/delegation bits into account here
+	if (is_irq_globaly_enable_per_level(MachineMode) && (csrs.clint.mip.mip_routed_read_64() & BIT(EXC_M_EXTERNAL_INTERRUPT))) {
+		if (csrs.mtvec.fields.mode == csr_mtvec::Mode::NestedVectored)
 			return {MachineMode, primary_ic_claim_pending(UIA_M_DOMAIN_CLAIMI_ADDR)};
 		else
 			return {MachineMode, 0};
 	}
 
-	if (is_irq_globaly_enable_per_level(SupervisorMode) && prime_eic->is_pending(SupervisorMode)) {
-		if (csrs.stvec.fields.mode == csr_mtvec::Mode::Vectored)
+	// NOTE: we don't take CLINT enable/delegation bits into account here
+	if (is_irq_globaly_enable_per_level(SupervisorMode) && (csrs.clint.mip.mip_routed_read_64() & BIT(EXC_S_EXTERNAL_INTERRUPT))) {
+		if (csrs.stvec.fields.mode == csr_mtvec::Mode::NestedVectored)
 			return {SupervisorMode, primary_ic_claim_pending(UIA_S_DOMAIN_CLAIMI_ADDR)};
 		else
 			return {SupervisorMode, 0};
@@ -3450,7 +3454,7 @@ std::tuple<PrivilegeLevel, bool> ISS::prepare_interrupt(void) {
 	PrivilegeLevel target_mode;
 	uint32_t iid;
 
-	if (prime_eic->is_primary()) {
+	if (csrs.mtvec.is_nested_modes()) {
 		// NOTE: when external ic is primary - we don't update clint interrupt CSRs (e.g. mtopi/stopi/vstopi)
 		std::tie(target_mode, iid) = compute_primary_ic_interrupt();
 	} else {
@@ -3552,25 +3556,78 @@ struct PendingInterrupts ISS::process_clint_pending_irq_bits_per_level(PendingIn
 	return pendings_processed;
 }
 
+bool ISS::has_local_pending_enabled_interrupts(void) {
+	if (csrs.mtvec.is_nested_modes())
+		return csrs.clint.mip.mip_routed_read_64() & (BIT(EXC_M_EXTERNAL_INTERRUPT) | BIT(EXC_S_EXTERNAL_INTERRUPT));
+	else
+		// TODO: this require modification to handle injection
+		return csrs.clint.mie.reg & csrs.clint.mip.reg;
+}
+
 void ISS::swap_stack_pointer(uint32_t & new_sp) {
 	uint32_t temp = new_sp;
 	new_sp = (uint32_t)regs[RegFile::sp];
 	regs[RegFile::sp] = (int32_t)temp;
+
+	if (trace) {
+		std::cout << "[vp::iss] Stack pointer swapped, new sp: 0x" << std::hex << new_sp << std::dec << std::endl;
+
+		// NOTE: right now we don't use lower 3 bits of sp, so they are expected to be zero
+		// later we may move push/enable flags there
+		if (new_sp & 0x7) {
+			std::cout << "[vp::iss] Warning: Stack pointer misaligned: 0x" << std::hex << new_sp << std::dec << std::endl;
+		}
+	}
+}
+
+void ISS::horizontal_uia_sp_swap(PrivilegeLevel base_mode, bool is_trap) {
+	switch (base_mode) {
+		case MachineMode:
+			if (is_trap) {
+				csrs.mstatus.mstatus.fields.mppush = csrs.mstatus.mstatus.fields.mpush;
+				if (csrs.mstatus.mstatus.fields.mpush) {
+					swap_stack_pointer(csrs.mtsp.reg);
+					csrs.mstatus.mstatus.fields.mpush = 0;
+				}
+			} else {
+				csrs.mstatus.mstatus.fields.mpush = csrs.mstatus.mstatus.fields.mppush;
+				if (csrs.mstatus.mstatus.fields.mppush) {
+					swap_stack_pointer(csrs.mtsp.reg);
+					csrs.mstatus.mstatus.fields.mppush = 0;
+				}
+			}
+			break;
+
+		case SupervisorMode:
+			if (is_trap) {
+				csrs.mstatus.mstatus.fields.sppush = csrs.mstatus.mstatus.fields.spush;
+				if (csrs.mstatus.mstatus.fields.spush) {
+					swap_stack_pointer(csrs.stsp.reg);
+					csrs.mstatus.mstatus.fields.spush = 0;
+				}
+			} else {
+				csrs.mstatus.mstatus.fields.spush = csrs.mstatus.mstatus.fields.sppush;
+				if (csrs.mstatus.mstatus.fields.sppush) {
+					swap_stack_pointer(csrs.stsp.reg);
+					csrs.mstatus.mstatus.fields.sppush = 0;
+				}
+			}
+			break;
+	}
 }
 
 // base_mode - mode where xRET is executed or mode which we trap to
 // desc_mode - mode where we appear after xRET or mode which we trap from
-void ISS::stsp_swap_sp_on_mode_change(PrivilegeLevel base_mode, PrivilegeLevel desc_mode) {
+// is_trap - true if we are trapping, false if we are returning from trap
+void ISS::stsp_swap_sp_on_mode_change(PrivilegeLevel base_mode, PrivilegeLevel desc_mode, bool is_trap) {
 	switch (base_mode) {
 		case MachineMode:
-			if (csrs.menvcfg.fields.mtsp) {
+			if (csrs.menvcfg.fields.mtsp || (csrs.mstatus.mstatus.fields.mppush && csrs.mstatus.mstatus.fields.mpush)) {
 				if (desc_mode != MachineMode) {
 					swap_stack_pointer(csrs.mtsp.reg);
 				}
-			} else if (csrs.menvcfg.fields.uia_tsp) {
-				if (prime_eic->is_primary() && !prime_eic->is_in_irq_context(MachineMode)) {
-					swap_stack_pointer(csrs.mtsp.reg);
-				}
+			} else {
+				horizontal_uia_sp_swap(base_mode, is_trap);
 			}
 
 			break;
@@ -3591,14 +3648,12 @@ void ISS::stsp_swap_sp_on_mode_change(PrivilegeLevel base_mode, PrivilegeLevel d
 				}
 			}
 
-			if (csrs.senvcfg.fields.stsp) {
+			if (csrs.senvcfg.fields.stsp || (csrs.mstatus.mstatus.fields.sppush && csrs.mstatus.mstatus.fields.spush)) {
 				if (!PrivilegeLevelToV(desc_mode) && desc_mode != SupervisorMode) {
 					swap_stack_pointer(csrs.stsp.reg);
 				}
-			} else if (csrs.senvcfg.fields.uia_tsp) {
-				if (prime_eic->is_primary() && !prime_eic->is_in_irq_context(SupervisorMode)) {
-					swap_stack_pointer(csrs.stsp.reg);
-				}
+			} else {
+				horizontal_uia_sp_swap(base_mode, is_trap);
 			}
 
 			break;
@@ -3670,16 +3725,12 @@ void ISS::jump_to_trap_vector(PrivilegeLevel base_mode) {
 
 	bool is_interrupt = xcause.fields.interrupt;
 
-	if (is_interrupt && prime_eic->is_primary() && xtvec.fields.mode == csr_mtvec::Mode::Vectored)
+	if (is_interrupt && xtvec.fields.mode == csr_mtvec::Mode::NestedVectored)
 		set_pending_ivt(xtvec_base + xtvec_ptr_size * xcause.fields.exception_code);
-	else if (!is_interrupt && prime_eic->is_primary() && xtvec.fields.mode == csr_mtvec::Mode::Vectored)
+	else if (!is_interrupt && xtvec.fields.mode == csr_mtvec::Mode::NestedVectored)
 		set_pending_ivt(xtvec_base);
 	else if (is_interrupt && xtvec.fields.mode == csr_mtvec::Mode::Vectored)
 		pc = xtvec_base + xtvec_ptr_size * xcause.fields.exception_code;
-	else if (is_interrupt && xtvec.fields.mode == csr_mtvec::Mode::SnpsNestedVectored)
-		set_pending_ivt(xtvec_base + xtvec_ptr_size * nv_mode_get_ivt_line_num(base_mode));
-	else if (!is_interrupt && xtvec.fields.mode == csr_mtvec::Mode::SnpsNestedVectored)
-		set_pending_ivt(xtvec_base);
 	else
 		pc = xtvec_base;
 
@@ -3690,8 +3741,8 @@ void ISS::jump_to_trap_vector(PrivilegeLevel base_mode) {
 // target_mode - mode where trap handler will be called
 void ISS::switch_to_trap_handler(PrivilegeLevel target_mode) {
 	if (trace) {
-		printf("[vp::iss] switch to trap handler, time %s, last_pc %8x, pc %8x, irq %u, t-prv %s\n",
-		       quantum_keeper.get_current_time().to_string().c_str(), last_pc, pc, csrs.mcause.fields.interrupt, PrivilegeLevelToStr(target_mode));
+		printf("[vp::iss] switch to trap handler, time %s, last_pc %8x, pc %8x, %s, t-prv %s\n",
+		       quantum_keeper.get_current_time().to_string().c_str(), last_pc, pc, csrs.mcause.fields.interrupt ? "irq" : "exc", PrivilegeLevelToStr(target_mode));
 	}
 
 	// free any potential LR/SC bus lock before processing a trap/interrupt
@@ -3700,7 +3751,7 @@ void ISS::switch_to_trap_handler(PrivilegeLevel target_mode) {
 	auto pp = prv;
 	prv = target_mode;
 
-	stsp_swap_sp_on_mode_change(target_mode, pp);
+	stsp_swap_sp_on_mode_change(target_mode, pp, true);
 
 	switch (target_mode) {
 		case MachineMode:
@@ -3710,8 +3761,6 @@ void ISS::switch_to_trap_handler(PrivilegeLevel target_mode) {
 			csrs.mstatus.mstatus.fields.mie = 0;
 			csrs.mstatus.mstatus.fields.mpp = PrivilegeLevelToPP(pp);
 			csrs.mstatus.mstatush.fields.mpv = PrivilegeLevelToV(pp);
-			csrs.mstatus.mstatush.fields.mdt = 1;
-
 			break;
 
 		case VirtualSupervisorMode:
@@ -3737,7 +3786,6 @@ void ISS::switch_to_trap_handler(PrivilegeLevel target_mode) {
 			csrs.mstatus.mstatus.fields.sie = 0;
 			csrs.mstatus.mstatus.fields.spp = PrivilegeLevelToPP(pp);
 			csrs.hstatus.fields.spv = PrivilegeLevelToV(pp);
-			csrs.mstatus.mstatus.fields.sdt = 1;
 
 			// When V=1 and a trap is taken into HS-mode, bit SPVP (Supervisor Previous Virtual Privilege)
 			// is set to the nominal privilege mode at the time of the trap, the same as sstatus.SPP. But if
@@ -3750,6 +3798,14 @@ void ISS::switch_to_trap_handler(PrivilegeLevel target_mode) {
 
 		default:
 			throw std::runtime_error("unknown privilege level " + std::string(PrivilegeLevelToStr(target_mode)));
+	}
+
+	if (use_double_trap) {
+		if (target_mode == MachineMode) {
+			csrs.mstatus.mstatush.fields.mdt = 1;
+		} else if (target_mode == SupervisorMode) {
+			csrs.mstatus.mstatus.fields.sdt = 1;
+		}
 	}
 
 	jump_to_trap_vector(target_mode);
