@@ -2,20 +2,16 @@
 
 ## Interrupt controllers
 
-Platform supports RTIA and UIA UCLIC interrupt controllers in a single riscv-vp executable.
+Platform supports UIA UCLIC interrupt controller.
 
-__NOTE__: the AIA/RTIA features (IMSIC, RTIA nested vectored mode, major interrupt priorities, major interrupt injection, etc.) and UIA UCLIC are mutually exclusive. The platform should be treated as one of the following configurations:
-- RTIA platform (interrupt delivery from UCLIC should not be enabled)
-- UIA UCLIC platform (RTIA nested vectored mode and interrupt delivery from IMSIC should not be enabled, and major interrupt injection should not be used)
-
-### UIA UCLIC
+### UIA UCLIC (compatible to public 0.2.0, 2026-05-10 spec)
 
 #### Features and configuration
 
 - 2 domains: Machine and Supervisor
 - 63 interrupts
-- Primary and Secondary delivery modes
-- Major interrupt redirection to UCLIC is supported in primary mode
+- Primary (Nested) and Secondary (Legacy) delivery modes
+- Major interrupt redirection to UCLIC is supported in Nested modes
 - External interrupt interface implemented (peripheral devices can be connected to the UCLIC via standard riscv-vp interface)
 - No H-extension support. The behavior is undefined (and untested) if UIA UCLIC primary mode is enabled and HART is running in VS/VU mode.
 - Interrupt lines **52-57** are occupied by platform peripheral devices. Usage of these lines for other purposes must be avoided, to prevent unexpected interrupts.
@@ -28,19 +24,17 @@ __NOTE__: the AIA/RTIA features (IMSIC, RTIA nested vectored mode, major interru
 - `CLRIPNUM`
 - `SETIENUM`
 - `CLRIENUM`
-- `IDELIVERY` *(includes primary mode field)*
-- `ITHRESHOLD` *(includes previous threshold field)*
-- `TOPI`
-- `CLAIMI` *(supports both claim and complete operations in primary mode)*
+- `IDELIVERY`
+- `ITHRESHOLD`
+- `TOPI` *(always returns same value as `CLAIMI`)*
+- `CLAIMI` *(interrupts above or equal the HW threshold can be claimed via this register in Nested modes)*
 
 The above registers have standard AIA APLIC offsets within their domain.
 
-#### Primary mode enable semantics
+#### Nested modes enable semantics
 
-- Primary mode can be enabled only in M-domain `IDELIVERY`
-- Enabling primary mode affects both M and S domains
-- The primary mode field in S-domain `IDELIVERY` is read-only 0
-
+- Nested modes can be enabled only in M-domain `mtvec` by setting the `mtvec.mode` field to `2` (direct nested mode) or `3` (vectored nested mode).
+- Enabling nested modes affects both M and S domains, stvec.MODE[1] is a read-only alias of mtvec.MODE[1]
 
 #### Additional / Non-standard IDC Registers:
 
@@ -54,14 +48,13 @@ Value:
 
 Value & behavior:
   - Read-only `0`
-  - **Primary mode:** read performs complete operation
-  - **Secondary mode:** read has no side effect
+  - **Nested modes:** read performs complete operation
+  - **Legacy modes:** read has no side effect
 
 `IDC_ONLY_CLAIM`
 
 Value & behavior:
-  - Read-only value equal to `TOPI`
-  - Unlike `CLAIMI`, no complete operation is performed when value is `0`
+  - Unlike `CLAIMI`, only interrupts above the HW threshold can be claimed via this register in Nested modes.
 
 #### UIA UCLIC memory map
 
@@ -81,25 +74,6 @@ APLIC_S_IDC_BASE             0x40014000
 IDC_DEBUG_HW_THRESHOLD       0x40014020
 IDC_ONLY_COMPLETE            0x40014010
 IDC_ONLY_CLAIM               0x40014014
-```
-
-### RTIA (compatible to current v1.0.2 RTIA TRM)
-
-#### Features and configuration
-
-- IMSIC
-  - M, S/HS and `7` guests IMSIC files
-  - `255` interrupts in each IMSIC file
-- AIA HART functionality - major interrupt priorities, major interrupt injection, etc.
-- RTIA nested vectored interrupt mode with major interrupt redirection to IMSIC
-
-__NOTE__: in this combined configuration (RTIA + UIA UCLIC) there is no APLIC controller which is capable of sending MSI to the IMSIC. The full-scale APLIC was replaced with a UIA UCLIC.
-
-#### RTIA memory map
-
-```c
-IMSIC_M_HART0_SETEIPNUM_LE      0x31000000
-IMSIC_S_HART0_SETEIPNUM_LE      0x31001000
 ```
 
 ## Interrupt / trap handling features
