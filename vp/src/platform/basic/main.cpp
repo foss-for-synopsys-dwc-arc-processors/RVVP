@@ -6,6 +6,7 @@
 #include "core/common/clint.h"
 #include "display.hpp"
 #include "dma.h"
+#include "external_timer.h"
 #include "elf_loader.h"
 #include "ethernet.h"
 #if 0
@@ -57,6 +58,8 @@ public:
 	addr_t clint_end_addr = 0x0200ffff;
 	addr_t sys_start_addr = 0x02010000;
 	addr_t sys_end_addr = 0x020103ff;
+	addr_t ext_timer_start_addr = 0x02010400;
+	addr_t ext_timer_end_addr = 0x02010443;
 	addr_t term_start_addr = 0x20000000;
 	addr_t term_end_addr = term_start_addr + 16;
 	addr_t uart_start_addr = 0x20010000;
@@ -138,7 +141,7 @@ int sc_main(int argc, char **argv) {
 	SimpleTerminal term("SimpleTerminal");
 	UART uart("Generic_UART", 56);
 	ELFLoader loader(opt.input_program.c_str());
-	SimpleBus<4, 14> bus("SimpleBus");
+	SimpleBus<4, 15> bus("SimpleBus");
 	CombinedMemoryInterface iss_mem_if("MemoryInterface", core, NULL, &spmp, &smpu);
 	SyscallHandler sys("SyscallHandler");
 #if 0
@@ -147,6 +150,7 @@ int sc_main(int argc, char **argv) {
 	APLIC_UIA<1, 2, 63> plic("APLIC_UIA", opt.trace_mode);
 #endif
 	CLINT<1> clint("CLINT", opt.trace_mode);
+	ExternalTimer ext_timer("ExternalTimer");
 	SimpleSensor sensor("SimpleSensor", 52);
 	SimpleSensor2 sensor2("SimpleSensor2", 55);
 	BasicTimer timer("BasicTimer", 53);
@@ -216,6 +220,7 @@ int sc_main(int argc, char **argv) {
 		bus.ports[it++] = new PortMapping(opt.imsic_start_addr, opt.imsic_end_addr);
 		bus.ports[it++] = new PortMapping(opt.display_start_addr, opt.display_end_addr);
 		bus.ports[it++] = new PortMapping(opt.sys_start_addr, opt.sys_end_addr);
+		bus.ports[it++] = new PortMapping(opt.ext_timer_start_addr, opt.ext_timer_end_addr);
 	}
 
 	// connect TLM sockets
@@ -245,6 +250,7 @@ int sc_main(int argc, char **argv) {
 		bus.isocks[it++].bind(core.imsic.tsock);
 		bus.isocks[it++].bind(display.tsock);
 		bus.isocks[it++].bind(sys.tsock);
+		bus.isocks[it++].bind(ext_timer.tsock);
 	}
 
 	// connect interrupt signals/communication
@@ -254,6 +260,7 @@ int sc_main(int argc, char **argv) {
 	sensor.plic = &plic;
 	dma.plic = &plic;
 	timer.plic = &plic;
+	ext_timer.plic = &plic;
 	sensor2.plic = &plic;
 	ethernet.plic = &plic;
 
